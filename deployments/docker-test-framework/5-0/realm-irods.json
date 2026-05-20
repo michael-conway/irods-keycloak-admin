@@ -1,0 +1,239 @@
+{
+  "realm": "irods",
+  "enabled": true,
+  "displayName": "iRODS Keycloak Admin Test",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "roles": {
+    "realm": [
+      {
+        "name": "irods-admin"
+      },
+      {
+        "name": "irods-user"
+      }
+    ],
+    "client": {
+      "irods-kc-admin-api": [
+        {
+          "name": "events"
+        },
+        {
+          "name": "provision"
+        },
+        {
+          "name": "mutate"
+        },
+        {
+          "name": "plan"
+        },
+        {
+          "name": "apply"
+        },
+        {
+          "name": "bootstrap"
+        },
+        {
+          "name": "repair"
+        },
+        {
+          "name": "diagnostics"
+        }
+      ]
+    }
+  },
+  "groups": [
+    {
+      "name": "irods",
+      "path": "/irods",
+      "attributes": {
+        "managed_by": [
+          "irods-keycloak-admin"
+        ],
+        "authority": [
+          "irods"
+        ]
+      },
+      "subGroups": [
+        {
+          "name": "project-alpha",
+          "path": "/irods/project-alpha",
+          "attributes": {
+            "irods_group_name": [
+              "project-alpha"
+            ],
+            "irods_zone": [
+              "tempZone"
+            ],
+            "managed_by": [
+              "irods-keycloak-admin"
+            ],
+            "authority": [
+              "irods"
+            ]
+          }
+        },
+        {
+          "name": "project-beta",
+          "path": "/irods/project-beta",
+          "attributes": {
+            "irods_group_name": [
+              "project-beta"
+            ],
+            "irods_zone": [
+              "tempZone"
+            ],
+            "managed_by": [
+              "irods-keycloak-admin"
+            ],
+            "authority": [
+              "irods"
+            ]
+          }
+        },
+        {
+          "name": "irods-admins",
+          "path": "/irods/irods-admins",
+          "attributes": {
+            "irods_group_name": [
+              "irods-admins"
+            ],
+            "irods_zone": [
+              "tempZone"
+            ],
+            "managed_by": [
+              "irods-keycloak-admin"
+            ],
+            "authority": [
+              "irods"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "test1",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "test1@example.org",
+      "firstName": "Test",
+      "lastName": "One",
+      "realmRoles": [
+        "irods-admin"
+      ],
+      "groups": [
+        "/irods/project-alpha",
+        "/irods/irods-admins"
+      ],
+      "attributes": {
+        "irods_user_name": [
+          "test1"
+        ],
+        "irods_zone": [
+          "tempZone"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "test2",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "test2@example.org",
+      "firstName": "Test",
+      "lastName": "Two",
+      "realmRoles": [
+        "irods-user"
+      ],
+      "groups": [
+        "/irods/project-alpha"
+      ],
+      "attributes": {
+        "irods_user_name": [
+          "test2"
+        ],
+        "irods_zone": [
+          "tempZone"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "test3",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "test3@example.org",
+      "firstName": "Test",
+      "lastName": "Three",
+      "realmRoles": [
+        "irods-user"
+      ],
+      "groups": [
+        "/irods/project-beta"
+      ],
+      "attributes": {
+        "irods_user_name": [
+          "test3"
+        ],
+        "irods_zone": [
+          "tempZone"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test",
+          "temporary": false
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "irods-kc-admin-api",
+      "name": "iRODS Keycloak Admin API",
+      "description": "Protected resource representing the irods-keycloak-admin control-plane API",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "irods-kc-admin-api-secret",
+      "bearerOnly": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false
+    },
+    {
+      "clientId": "irods-kc-admin-cli",
+      "name": "iRODS Keycloak Admin CLI",
+      "description": "Confidential client for local integration and e2e tests",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "irods-kc-admin-cli-secret",
+      "bearerOnly": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true
+    }
+  ]
+}

@@ -1,0 +1,202 @@
+openapi: 3.1.0
+info:
+  title: iRODS Keycloak Admin Control Plane
+  version: 0.1.0-dev
+servers:
+  - url: http://localhost:8081
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      responses:
+        "200":
+          description: service health
+  /admin/v1/status:
+    get:
+      operationId: getStatus
+      responses:
+        "200":
+          description: service status
+  /admin/v1/config/summary:
+    get:
+      operationId: getConfigSummary
+      responses:
+        "200":
+          description: non-secret configuration summary
+  /admin/v1/irods/groups:
+    post:
+      operationId: createIRODSGroupIntent
+      responses:
+        "202":
+          description: group mutation accepted
+        "501":
+          description: endpoint scaffolded but not implemented
+  /admin/v1/irods/groups/{group_name}:
+    delete:
+      operationId: deleteIRODSGroupIntent
+      parameters:
+        - $ref: "#/components/parameters/GroupName"
+      responses:
+        "202":
+          description: group mutation accepted
+        "501":
+          description: endpoint scaffolded but not implemented
+  /admin/v1/irods/groups/{group_name}/members/{user_name}:
+    post:
+      operationId: addIRODSGroupMemberIntent
+      parameters:
+        - $ref: "#/components/parameters/GroupName"
+        - $ref: "#/components/parameters/UserName"
+      responses:
+        "202":
+          description: membership mutation accepted
+        "501":
+          description: endpoint scaffolded but not implemented
+    delete:
+      operationId: removeIRODSGroupMemberIntent
+      parameters:
+        - $ref: "#/components/parameters/GroupName"
+        - $ref: "#/components/parameters/UserName"
+      responses:
+        "202":
+          description: membership mutation accepted
+        "501":
+          description: endpoint scaffolded but not implemented
+  /admin/v1/sync/plan:
+    post:
+      operationId: planSync
+      responses:
+        "200":
+          description: sync plan
+        "501":
+          description: endpoint scaffolded but not implemented
+  /admin/v1/sync/apply:
+    post:
+      operationId: applySync
+      responses:
+        "202":
+          description: sync apply accepted
+        "501":
+          description: endpoint scaffolded but not implemented
+  /admin/v1/bootstrap/keycloak:
+    post:
+      operationId: bootstrapKeycloak
+      responses:
+        "202":
+          description: bootstrap accepted
+        "501":
+          description: endpoint scaffolded but not implemented
+  /admin/v1/repair/keycloak:
+    post:
+      operationId: repairKeycloak
+      responses:
+        "202":
+          description: repair accepted
+        "501":
+          description: endpoint scaffolded but not implemented
+  /admin/v1/keycloak/events:
+    post:
+      operationId: ingestKeycloakEvent
+      responses:
+        "202":
+          description: event accepted
+        "501":
+          description: endpoint scaffolded but not implemented
+  /admin/v1/provisioning/users/{keycloak_user_id}/plan:
+    post:
+      operationId: planProvisionUser
+      parameters:
+        - $ref: "#/components/parameters/KeycloakUserID"
+      responses:
+        "200":
+          description: provisioning plan
+        "501":
+          description: endpoint scaffolded but not implemented
+  /admin/v1/provisioning/users/{keycloak_user_id}/apply:
+    post:
+      operationId: applyProvisionUser
+      parameters:
+        - $ref: "#/components/parameters/KeycloakUserID"
+      responses:
+        "202":
+          description: provisioning apply accepted
+        "501":
+          description: endpoint scaffolded but not implemented
+  /admin/v1/provisioning/requests:
+    post:
+      operationId: createProvisioningRequest
+      responses:
+        "202":
+          description: provisioning request accepted
+        "501":
+          description: endpoint scaffolded but not implemented
+  /admin/v1/provisioning/requests/{request_id}/approve:
+    post:
+      operationId: approveProvisioningRequest
+      parameters:
+        - $ref: "#/components/parameters/RequestID"
+      responses:
+        "202":
+          description: provisioning request approval accepted
+        "501":
+          description: endpoint scaffolded but not implemented
+  /admin/v1/provisioning/requests/{request_id}/reject:
+    post:
+      operationId: rejectProvisioningRequest
+      parameters:
+        - $ref: "#/components/parameters/RequestID"
+      responses:
+        "202":
+          description: provisioning request rejection accepted
+        "501":
+          description: endpoint scaffolded but not implemented
+  /admin/v1/diagnostics/check-config:
+    post:
+      operationId: checkConfig
+      responses:
+        "200":
+          description: configuration diagnostic result
+        "501":
+          description: endpoint scaffolded but not implemented
+  /admin/v1/diagnostics/check-mapping:
+    post:
+      operationId: checkMapping
+      responses:
+        "200":
+          description: mapping diagnostic result
+        "501":
+          description: endpoint scaffolded but not implemented
+  /admin/v1/diagnostics/check-drift:
+    post:
+      operationId: checkDrift
+      responses:
+        "200":
+          description: drift diagnostic result
+        "501":
+          description: endpoint scaffolded but not implemented
+components:
+  parameters:
+    GroupName:
+      name: group_name
+      in: path
+      required: true
+      schema:
+        type: string
+    UserName:
+      name: user_name
+      in: path
+      required: true
+      schema:
+        type: string
+    KeycloakUserID:
+      name: keycloak_user_id
+      in: path
+      required: true
+      schema:
+        type: string
+    RequestID:
+      name: request_id
+      in: path
+      required: true
+      schema:
+        type: string

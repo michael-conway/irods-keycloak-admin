@@ -1,0 +1,16 @@
+CREATE USER irods WITH PASSWORD 'testpassword';
+CREATE DATABASE "ICAT" OWNER irods;
+GRANT ALL PRIVILEGES ON DATABASE "ICAT" TO irods;
+
+\connect "ICAT"
+ALTER SCHEMA public OWNER TO irods;
+GRANT ALL ON SCHEMA public TO irods;
+
+\connect postgres
+CREATE USER keycloak WITH PASSWORD 'testpassword';
+CREATE DATABASE "KEYCLOAK" OWNER keycloak;
+GRANT ALL PRIVILEGES ON DATABASE "KEYCLOAK" TO keycloak;
+
+\connect "KEYCLOAK"
+ALTER SCHEMA public OWNER TO keycloak;
+GRANT ALL ON SCHEMA public TO keycloak;
