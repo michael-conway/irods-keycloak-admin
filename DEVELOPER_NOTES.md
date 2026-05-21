@@ -23,157 +23,116 @@ plans derived from the larger strategy and phase plan. When the sprint changes,
 update this section first, then reconcile any stale lower-level examples in the
 rest of the document.
 
-### Sprint Plan: iRODS REST Boundary and Keycloak Admin Orchestration
+### Sprint Plan: Controlled Keycloak Repair Apply
 
 Date: 2026-05-21
 
 Goal:
 
 ```text
-Build the first vertical slice with irods-keycloak-admin planning and
-orchestrating, direct usersync/go-irodsclient calls handling local CLI iRODS
-work, and Keycloak Admin REST updating mirror state.
+Turn the validated repair-keycloak dry-run plan into a controlled Keycloak
+mirror apply workflow. iRODS remains the source of truth and is read-only for
+this sprint; apply mutates only Keycloak mirror groups and memberships.
 ```
 
 Important boundary decision:
 
 ```text
-Generic iRODS group/user HTTP routes belong in irods-go-rest.
-irods-keycloak-admin should not grow a second generic iRODS REST API.
-Local irods-kc-* CLIs should not call irods-go-rest for iRODS sync work.
+irods-keycloak-admin owns orchestration and Keycloak mirror repair.
+Generic iRODS mutation remains outside this repo.
+Local irods-kc-* commands use direct go-irodsclient reads for iRODS state.
 ```
 
-#### irods-go-rest Tasks
+#### Current Sprint Tasks
 
-x1. Review existing `/api/v1/usergroup` behavior.
+x1. Stabilize the plan contract.
 
-- Confirm create/delete group and add/remove member semantics.
-- Check current authorization rules, error mapping, idempotency, and audit/log
-  fields.
+- Added a plan format/version field as a compatibility marker.
+- Made operation ordering and evidence fields deterministic enough for review,
+  test comparison, and later apply validation.
+- Added `--out` and `--plan-path` support for writing a dry-run plan to a file,
+  while preserving stdout JSON for shell usage.
 
-x2. Harden usergroup endpoints for service callers.
+x2. Implement Keycloak Admin REST mutation methods.
 
-- Clarify the service-account authorization path:
-  - no separate REST-side sync ACL or state store
-  - service accounts must map to an effective/proxy iRODS user
-  - mutation authority follows normal iRODS roles
-  - `reconcile=true` does not bypass iRODS role checks
-- Require or propagate `X-Request-ID`; if absent, REST generates one and
-  returns it in the response header.
-- Add actor/source audit fields where available from auth context:
-  - `X-IRODS-Actor`
-  - `X-IRODS-Source`
-  - `Idempotency-Key`
-  - bearer subject/client/scopes/audience
-- Make create/add-member/remove-member safe for repeat calls through
-  `reconcile=true`, while preserving strict conflict/not-found behavior for
-  non-reconcile calls.
-- Push reusable reconcile behavior into `go-irodsclient-extensions/usersync`.
-  REST owns HTTP auth, effective iRODS account selection, response mapping, and
-  audit emission.
-- Enforce sync guardrails in `usersync`:
-  - sync creates/manages normal `rodsuser` accounts and `rodsgroup` groups
-  - sync does not create, claim, delete, update, or manage membership for
-    `groupadmin` or `rodsadmin` users
-  - iRODS admin privilege adjustments remain explicit iRODS admin workflows,
-    not synchronization behavior
-  - created users/groups are marked with `iRODS:USER_SYNCH:MANAGED=true`
-  - existing users/groups are not claimed unless explicitly requested
-  - delete-class operations require managed AVUs unless explicitly relaxed
+- Added missing mirror group creation under the configured mirror root.
+- Added missing Keycloak group member adds by resolving users by username.
+- Added stale Keycloak group member removal by group ID and user ID.
+- Added stale mirror group deletion as an idempotent low-level operation; the
+  apply command owns the explicit approval gate before calling it.
+- Kept mutation methods idempotent where Keycloak semantics permit repeat
+  calls.
 
-Managed sync AVUs use the `iRODS:USER_SYNCH:<field>` family:
+x3. Add a controlled apply command.
 
-- `iRODS:USER_SYNCH:MANAGED`
-- `iRODS:USER_SYNCH:SOURCE`
-- `iRODS:USER_SYNCH:REALM`
-- `iRODS:USER_SYNCH:EXTERNAL_ID`
-- `iRODS:USER_SYNCH:LAST_SYNC_AT`
-- `iRODS:USER_SYNCH:LAST_PLAN_ID`
+- Added `irods-kc-sync apply --plan plan.json` as the generic plan apply
+  surface.
+- Added preflight validation for plan format, mode, authority, realm, zone,
+  operation IDs, supported actions, and target shape before mutating Keycloak.
+- Replaced the delete-specific approval flag with `--prompts=required|all|none`.
+  `required` is the default and prompts only for `requires_approval`
+  operations; `all` prompts for every operation; `none` runs all valid
+  operations without prompts.
+- Prompted decisions are `accept`, `skip`, `accept_all`, and `skip_all`.
+  `accept_all` switches the remaining run to `prompts=none`.
+- Emits an apply result with applied, skipped, failed, and warning counts.
+- Apply mutates only Keycloak mirror state; iRODS is not touched in this sprint.
 
-x3. Update OpenAPI and documentation.
+x4. Add live e2e apply coverage.
 
-- Document `/api/v1/usergroup` as the generic REST surface for iRODS group
-  create/delete and membership management.
-- Document that Keycloak workflows should call these generic routes, not
-  `/api/v1/ext`.
+- Added live apply tests for creating a missing Keycloak mirror group.
+- Added live apply tests for adding missing Keycloak mirror membership.
+- Added live apply tests for removing stale Keycloak mirror membership.
+- Added prompt-policy coverage showing stale mirror deletion is skipped without
+  approval and succeeds after explicit acceptance.
+- Added repeat-apply coverage for already-applied create, membership removal,
+  and stale mirror delete plans.
+- Re-runs dry-run after apply and confirms the targeted fixture is converged.
 
-x4. Add focused tests.
+x5. Keep documentation and operator ergonomics current.
 
-- Handler/service tests for idempotency and permission failures.
-- Negative tests for missing group/user parameters.
-- Audit/request-id behavior tests where practical.
+- Documented plan file generation, apply command usage, prompt policy, and
+  Keycloak credential options.
+- Updated `make install` and direct `go run ./cmd/irods-kc-sync ...` examples
+  for plan generation and apply.
+- Updated the e2e README to cover internal Docker and irods-grid-stack endpoint
+  alignment, live apply tests, and prompt-policy behavior.
 
-#### irods-keycloak-admin Tasks
+Success criteria:
 
-x1. Remove generic group mutation routes from the admin API scaffold.
+- `irods-kc-sync repair-keycloak --dry-run` remains read-only.
+- `irods-kc-sync apply --plan ...` mutates only Keycloak mirror state.
+- Repeat apply is safe for already-converged mirror state.
+- Live e2e tests pass against the disposable Docker framework.
 
-- Drop `/admin/v1/irods/groups*`.
-- Keep control-plane routes only: sync, repair, bootstrap, provisioning, events,
-  and diagnostics.
+#### Completed Sprint: Dry-run Repair Planning
 
-x2. Pivot command-line sync workflows to direct `usersync` library calls.
-
-- Do not route `irods-kc-sync` or other local command-line clients through
-  `irods-go-rest`.
-- Use `go-irodsclient-extensions/usersync` for shared reconciliation behavior.
-- Use the same iCommands-compatible initialization/environment model as
-  `gocmd` and `drscmd` for direct iRODS connections.
-- Reserve the Keycloak admin API for Keycloak integration, service callbacks,
-  and remote control-plane workflows.
-- Do not add an `irodsrest` client package unless a separate remote REST client
-  use case appears.
-
-x3. Clarify the direct iRODS adapter role.
-
-- Keep `irodsadapter` as the direct iRODS boundary over `go-irodsclient` and
-  `go-irodsclient-extensions/usersync`.
-- Keep generic `irods-go-rest` calls out of local CLI execution paths.
-- Higher layers should depend on `irodsadapter` interfaces rather than using
-  `go-irodsclient`, `usersync`, or REST clients directly.
-- Reuse `go-irodsclient` domain types and `usersync` policy/helpers; do not
-  redefine iRODS users, groups, AVUs, or sync guardrails locally.
-
-x4. Start with `repair-keycloak` planning.
-
-- Read authoritative iRODS groups through `irodsadapter` and shared
-  `usersync`/`go-irodsclient` structures.
-- Read Keycloak mirror groups through Keycloak Admin REST.
-- Emit a plan only; do not apply mutations yet.
-
-x5. Update strategy/API stubs as the boundary is implemented.
-
-- `irods-go-rest` is the generic iRODS REST API.
-- `irods-keycloak-admin` is the orchestration/control-plane API.
-- `/admin/v1` exposes Keycloak mirror, sync, repair, bootstrap, provisioning,
-  event, and diagnostics workflows only.
-- Generic iRODS user/group/path/resource/ticket HTTP operations remain in
-  `irods-go-rest` core APIs, not this service and not `/api/v1/ext`.
-- Local `irods-kc-*` CLI workflows use `irodsadapter` and shared
-  `go-irodsclient-extensions/usersync` code rather than routing through REST.
-
-#### First Vertical Slice
+Command:
 
 ```text
-irods-kc-sync repair-keycloak --dry-run
+irods-kc-sync repair-keycloak --dry-run --realm irods
 ```
 
-Expected behavior:
+Completed behavior:
 
 - Reads iRODS group state.
 - Reads Keycloak mirror group state.
 - Produces a plan showing missing, stale, or divergent Keycloak mirror groups.
 - Does not mutate either system.
 
-Current implementation notes:
+Completed implementation notes:
 
-- The CLI uses direct `go-irodsclient` through `internal/irodsadapter`.
-- The CLI reads Keycloak mirror state through Keycloak Admin REST.
-- Explicit/e2e iRODS connection environment variables are supported for
-  disposable stacks; otherwise the iCommands environment is used.
+- Added direct `go-irodsclient` access through `internal/irodsadapter`.
+- Added Keycloak Admin REST reads with recursive group/child discovery.
+- Added CLI support for explicit/e2e iRODS connection settings and fallback to
+  the iCommands environment.
+- Added `make install` and README guidance for installed and `go run` usage.
+- Added Keycloak credential documentation.
+- Added live e2e dry-run tests against the Docker framework for missing,
+  stale, and divergent Keycloak mirror groups.
 
-Deferred until the plan output is solid:
+Deferred beyond the next apply sprint:
 
-- `sync apply`.
 - Full bootstrap.
 - Provisioning request approval flow.
 - Java SPI integration.

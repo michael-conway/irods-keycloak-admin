@@ -127,3 +127,214 @@ func TestHTTPClientResolvePreservesBasePath(t *testing.T) {
 		t.Fatalf("unexpected resolved URL:\nwant %s\ngot  %s", want, got)
 	}
 }
+
+func TestHTTPClientGroupAndMembershipMutationsAreIdempotent(t *testing.T) {
+	var groupCreated bool
+	var memberPresent bool
+	var createGroupCalls int
+	var updateGroupCalls int
+	var addMemberCalls int
+	var removeMemberCalls int
+	var deleteGroupCalls int
+	var updateUserCalls int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/realms/master/protocol/openid-connect/token":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "token",
+				"expires_in":   300,
+			})
+		case "/admin/realms/irods/groups":
+			if r.Method != http.MethodGet {
+				t.Fatalf("unexpected groups method: %s", r.Method)
+			}
+			subGroupCount := 0
+			if groupCreated {
+				subGroupCount = 1
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id":            "root-id",
+				"name":          "irods",
+				"path":          "/irods",
+				"subGroupCount": subGroupCount,
+				"subGroups":     []map[string]any{},
+			}})
+		case "/admin/realms/irods/groups/root-id/children":
+			switch r.Method {
+			case http.MethodGet:
+				if !groupCreated {
+					_ = json.NewEncoder(w).Encode([]map[string]any{})
+					return
+				}
+				_ = json.NewEncoder(w).Encode([]map[string]any{projectAlphaGroupResponse()})
+			case http.MethodPost:
+				createGroupCalls++
+				var body Group
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode create group body: %v", err)
+				}
+				if body.Name != "project-alpha" || body.Attributes["authority"][0] != "irods" {
+					t.Fatalf("unexpected create group body: %+v", body)
+				}
+				groupCreated = true
+				w.WriteHeader(http.StatusCreated)
+			default:
+				t.Fatalf("unexpected root children method: %s", r.Method)
+			}
+		case "/admin/realms/irods/groups/project-id":
+			switch r.Method {
+			case http.MethodPut:
+				updateGroupCalls++
+				var body Group
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode update group body: %v", err)
+				}
+				if body.ID != "project-id" || body.Path != "/irods/project-alpha" {
+					t.Fatalf("unexpected update group body: %+v", body)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			case http.MethodDelete:
+				if !groupCreated {
+					http.NotFound(w, r)
+					return
+				}
+				deleteGroupCalls++
+				groupCreated = false
+				memberPresent = false
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				t.Fatalf("unexpected group method: %s", r.Method)
+			}
+		case "/admin/realms/irods/groups/project-id/children":
+			_ = json.NewEncoder(w).Encode([]map[string]any{})
+		case "/admin/realms/irods/users":
+			if r.Method != http.MethodGet || r.URL.Query().Get("username") != "alice" || r.URL.Query().Get("exact") != "true" {
+				t.Fatalf("unexpected users request: %s %s", r.Method, r.URL.String())
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": "user-id", "username": "alice"}})
+		case "/admin/realms/irods/users/user-id":
+			switch r.Method {
+			case http.MethodGet:
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": "user-id", "username": "alice", "email": "alice@example.org"})
+			case http.MethodPut:
+				updateUserCalls++
+				var body User
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode update user body: %v", err)
+				}
+				if body.ID != "user-id" || body.Username != "alice" || body.Email != "alice-updated@example.org" {
+					t.Fatalf("unexpected update user body: %+v", body)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				t.Fatalf("unexpected user method: %s", r.Method)
+			}
+		case "/admin/realms/irods/groups/project-id/members":
+			if !memberPresent {
+				_ = json.NewEncoder(w).Encode([]map[string]any{})
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": "user-id", "username": "alice"}})
+		case "/admin/realms/irods/users/user-id/groups/project-id":
+			switch r.Method {
+			case http.MethodPut:
+				addMemberCalls++
+				memberPresent = true
+				w.WriteHeader(http.StatusNoContent)
+			case http.MethodDelete:
+				removeMemberCalls++
+				memberPresent = false
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				t.Fatalf("unexpected membership method: %s", r.Method)
+			}
+		default:
+			t.Fatalf("unexpected request path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(HTTPClientConfig{
+		BaseURL:  server.URL,
+		Username: "admin",
+		Password: "admin",
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPClient returned error: %v", err)
+	}
+
+	if updated, err := client.CreateOrUpdateUser(context.Background(), "irods", User{Username: "alice", Email: "alice-updated@example.org"}); err != nil {
+		t.Fatalf("CreateOrUpdateUser returned error: %v", err)
+	} else if updated.ID != "user-id" || updated.Username != "alice" {
+		t.Fatalf("unexpected updated user: %+v", updated)
+	}
+	if updateUserCalls != 1 {
+		t.Fatalf("expected one user update, got %d", updateUserCalls)
+	}
+
+	group := Group{
+		Name: "project-alpha",
+		Path: "/irods/project-alpha",
+		Attributes: map[string][]string{
+			"irods_group_name": {"project-alpha"},
+			"irods_zone":       {"tempZone"},
+			"authority":        {"irods"},
+		},
+	}
+	if created, err := client.CreateOrUpdateGroup(context.Background(), "irods", group); err != nil {
+		t.Fatalf("CreateOrUpdateGroup create returned error: %v", err)
+	} else if created.ID != "project-id" {
+		t.Fatalf("unexpected created group: %+v", created)
+	}
+	if _, err := client.CreateOrUpdateGroup(context.Background(), "irods", group); err != nil {
+		t.Fatalf("CreateOrUpdateGroup update returned error: %v", err)
+	}
+	if createGroupCalls != 1 || updateGroupCalls != 1 {
+		t.Fatalf("unexpected group mutation calls: create=%d update=%d", createGroupCalls, updateGroupCalls)
+	}
+
+	if err := client.AddUserToGroup(context.Background(), "irods", "alice", "/irods/project-alpha"); err != nil {
+		t.Fatalf("AddUserToGroup returned error: %v", err)
+	}
+	if err := client.AddUserToGroup(context.Background(), "irods", "alice", "/irods/project-alpha"); err != nil {
+		t.Fatalf("repeat AddUserToGroup returned error: %v", err)
+	}
+	if addMemberCalls != 1 {
+		t.Fatalf("expected idempotent add member, got %d calls", addMemberCalls)
+	}
+
+	if err := client.RemoveUserFromGroup(context.Background(), "irods", "alice", "/irods/project-alpha"); err != nil {
+		t.Fatalf("RemoveUserFromGroup returned error: %v", err)
+	}
+	if err := client.RemoveUserFromGroup(context.Background(), "irods", "alice", "/irods/project-alpha"); err != nil {
+		t.Fatalf("repeat RemoveUserFromGroup returned error: %v", err)
+	}
+	if removeMemberCalls != 1 {
+		t.Fatalf("expected idempotent remove member, got %d calls", removeMemberCalls)
+	}
+
+	if err := client.DeleteGroup(context.Background(), "irods", "/irods/project-alpha"); err != nil {
+		t.Fatalf("DeleteGroup returned error: %v", err)
+	}
+	if err := client.DeleteGroup(context.Background(), "irods", "/irods/project-alpha"); err != nil {
+		t.Fatalf("repeat DeleteGroup returned error: %v", err)
+	}
+	if deleteGroupCalls != 1 {
+		t.Fatalf("expected idempotent delete group, got %d calls", deleteGroupCalls)
+	}
+}
+
+func projectAlphaGroupResponse() map[string]any {
+	return map[string]any{
+		"id":   "project-id",
+		"name": "project-alpha",
+		"path": "/irods/project-alpha",
+		"attributes": map[string][]string{
+			"irods_group_name": {"project-alpha"},
+			"irods_zone":       {"tempZone"},
+			"authority":        {"irods"},
+		},
+	}
+}

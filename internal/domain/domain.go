@@ -1,5 +1,19 @@
 package domain
 
+const (
+	SyncPlanFormatVersion = "irods-keycloak-admin.sync-plan.v1"
+
+	SyncPlanModeRepairKeycloak = "repair-keycloak"
+	SyncPlanAuthorityIRODS     = "irods"
+
+	PlanActionKeycloakGroupCreate       = "keycloak.group.create"
+	PlanActionKeycloakGroupMemberAdd    = "keycloak.group.member.add"
+	PlanActionKeycloakGroupMemberRemove = "keycloak.group.member.remove"
+	PlanActionKeycloakGroupDelete       = "keycloak.group.delete"
+
+	PlanRiskRequiresApproval = "requires_approval"
+)
+
 type Actor struct {
 	Type     string `json:"type,omitempty"`
 	ID       string `json:"id,omitempty"`
@@ -82,9 +96,11 @@ type SystemMutationResult struct {
 }
 
 type MutationResult struct {
+	OperationID    string                `json:"operation_id,omitempty"`
 	Status         string                `json:"status"`
 	RequestID      string                `json:"request_id,omitempty"`
 	Operation      string                `json:"operation"`
+	Target         string                `json:"target,omitempty"`
 	IRODS          *SystemMutationResult `json:"irods,omitempty"`
 	KeycloakMirror *SystemMutationResult `json:"keycloak_mirror,omitempty"`
 	Warnings       []Warning             `json:"warnings"`
@@ -106,6 +122,7 @@ type PlanOperation struct {
 }
 
 type SyncPlan struct {
+	PlanFormatVersion string          `json:"plan_format_version"`
 	PlanID            string          `json:"plan_id"`
 	Mode              string          `json:"mode"`
 	Authority         string          `json:"authority"`
@@ -117,13 +134,15 @@ type SyncPlan struct {
 }
 
 type ApplyResult struct {
-	Status     string           `json:"status"`
-	RequestID  string           `json:"request_id,omitempty"`
-	PlanID     string           `json:"plan_id,omitempty"`
-	Applied    int              `json:"applied"`
-	Failed     int              `json:"failed"`
-	Warnings   []Warning        `json:"warnings"`
-	Operations []MutationResult `json:"operations,omitempty"`
+	Status       string           `json:"status"`
+	RequestID    string           `json:"request_id,omitempty"`
+	PlanID       string           `json:"plan_id,omitempty"`
+	Applied      int              `json:"applied"`
+	Skipped      int              `json:"skipped"`
+	Failed       int              `json:"failed"`
+	WarningCount int              `json:"warning_count"`
+	Warnings     []Warning        `json:"warnings"`
+	Operations   []MutationResult `json:"operations,omitempty"`
 }
 
 type EventResult struct {

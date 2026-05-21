@@ -14,12 +14,12 @@ import (
 	"github.com/michael-conway/irods-keycloak-admin/internal/irodsadapter"
 	"github.com/michael-conway/irods-keycloak-admin/internal/keycloakadmin"
 	"github.com/michael-conway/irods-keycloak-admin/internal/mapper"
+	planvalidator "github.com/michael-conway/irods-keycloak-admin/internal/plan"
+	"github.com/michael-conway/irods-keycloak-admin/internal/planreview"
 	"github.com/michael-conway/irods-keycloak-admin/internal/service"
 )
 
 const (
-	modeRepairKeycloak       = "repair-keycloak"
-	authorityIRODS           = "irods"
 	defaultKeycloakGroupRoot = "/irods"
 
 	mirrorAttrGroupName = "irods_group_name"
@@ -34,9 +34,12 @@ type Service struct {
 	Mapper       mapper.Mapper
 	DefaultRealm string
 	DefaultZone  string
+	PromptMode   planreview.PromptMode
+	Reviewer     planreview.Reviewer
 }
 
 var _ service.RepairService = (*Service)(nil)
+var _ service.SyncService = (*Service)(nil)
 
 type irodsGroupSnapshot struct {
 	Name    string
@@ -49,7 +52,7 @@ type keycloakGroupSnapshot struct {
 	Name    string
 	Path    string
 	Zone    string
-	Members map[string]struct{}
+	Members map[string]string
 }
 
 func (s *Service) RepairKeycloak(ctx context.Context, req domain.RepairRequest) (domain.SyncPlan, error) {
@@ -78,12 +81,184 @@ func (s *Service) RepairKeycloak(ctx context.Context, req domain.RepairRequest) 
 	return s.planRepair(realm, zone, irodsGroups, keycloakGroups), nil
 }
 
+func (s *Service) Apply(ctx context.Context, req domain.ApplyRequest) (domain.ApplyResult, error) {
+	if err := s.validateKeycloak(); err != nil {
+		return domain.ApplyResult{}, err
+	}
+	if req.Plan == nil {
+		return domain.ApplyResult{}, errors.New("plan is required")
+	}
+
+	syncPlan := *req.Plan
+	realm := s.realmFor(firstNonEmpty(req.Realm, syncPlan.Realm))
+	zone := s.zoneFor(firstNonEmpty(req.Zone, syncPlan.Zone))
+	if err := planvalidator.ValidateForApply(syncPlan, planvalidator.ApplyValidationOptions{
+		ExpectedRealm: realm,
+		ExpectedZone:  zone,
+	}); err != nil {
+		return domain.ApplyResult{}, err
+	}
+	reviewSession, err := planreview.NewSession(s.PromptMode, s.Reviewer)
+	if err != nil {
+		return domain.ApplyResult{}, err
+	}
+
+	result := domain.ApplyResult{
+		Status:     "applied",
+		PlanID:     syncPlan.PlanID,
+		Warnings:   []domain.Warning{},
+		Operations: []domain.MutationResult{},
+	}
+	if len(syncPlan.Operations) == 0 {
+		result.Status = "skipped"
+		return result, nil
+	}
+
+	for _, operation := range syncPlan.Operations {
+		mutation := newMutationResult(syncPlan, operation)
+		decision, err := reviewSession.Decide(ctx, syncPlan, operation)
+		if err != nil {
+			return domain.ApplyResult{}, err
+		}
+		if decision == planreview.DecisionSkip {
+			mutation.Status = "skipped"
+			if mutation.KeycloakMirror != nil {
+				mutation.KeycloakMirror.Status = "skipped"
+			}
+			result.Skipped++
+			result.Operations = append(result.Operations, mutation)
+			continue
+		}
+		if err := s.applyOperation(ctx, syncPlan, operation); err != nil {
+			mutation.Status = "failed"
+			if mutation.KeycloakMirror != nil {
+				mutation.KeycloakMirror.Status = "failed"
+			}
+			mutation.Warnings = append(mutation.Warnings, domain.Warning{
+				Code:    "apply.operation_failed",
+				Message: err.Error(),
+			})
+			result.Failed++
+			result.Warnings = append(result.Warnings, mutation.Warnings...)
+		} else {
+			mutation.Status = "applied"
+			if mutation.KeycloakMirror != nil {
+				mutation.KeycloakMirror.Status = "applied"
+			}
+			result.Applied++
+		}
+		result.Operations = append(result.Operations, mutation)
+	}
+	result.WarningCount = len(result.Warnings)
+	if result.Failed > 0 {
+		result.Status = "failed"
+	} else if result.Applied == 0 && result.Skipped > 0 {
+		result.Status = "skipped"
+	}
+	return result, nil
+}
+
+func (s *Service) applyOperation(ctx context.Context, syncPlan domain.SyncPlan, operation domain.PlanOperation) error {
+	switch operation.Action {
+	case domain.PlanActionKeycloakGroupCreate:
+		groupPath, err := planvalidator.GroupTarget(operation)
+		if err != nil {
+			return err
+		}
+		groupName := planvalidator.EvidenceString(operation, "irods_group_name")
+		if groupName == "" {
+			groupName = planvalidator.GroupNameFromPath(groupPath)
+		}
+		zone := planvalidator.EvidenceString(operation, "irods_zone")
+		if zone == "" {
+			zone = syncPlan.Zone
+		}
+		_, err = s.Keycloak.CreateOrUpdateGroup(ctx, syncPlan.Realm, keycloakadmin.Group{
+			Name: groupName,
+			Path: groupPath,
+			Attributes: map[string][]string{
+				mirrorAttrGroupName: {groupName},
+				mirrorAttrZone:      {zone},
+				mirrorAttrAuthority: {domain.SyncPlanAuthorityIRODS},
+			},
+		})
+		return err
+	case domain.PlanActionKeycloakGroupMemberAdd:
+		groupPath, username, err := planvalidator.MemberTarget(operation)
+		if err != nil {
+			return err
+		}
+		groupRef := firstNonEmpty(planvalidator.EvidenceString(operation, "keycloak_group_id"), groupPath)
+		return s.Keycloak.AddUserToGroup(ctx, syncPlan.Realm, username, groupRef)
+	case domain.PlanActionKeycloakGroupMemberRemove:
+		groupPath, username, err := planvalidator.MemberTarget(operation)
+		if err != nil {
+			return err
+		}
+		groupRef := firstNonEmpty(planvalidator.EvidenceString(operation, "keycloak_group_id"), groupPath)
+		userRef := firstNonEmpty(planvalidator.EvidenceString(operation, "keycloak_user_id"), planvalidator.EvidenceString(operation, "keycloak_user"), username)
+		return s.Keycloak.RemoveUserFromGroup(ctx, syncPlan.Realm, userRef, groupRef)
+	case domain.PlanActionKeycloakGroupDelete:
+		groupPath, err := planvalidator.GroupTarget(operation)
+		if err != nil {
+			return err
+		}
+		groupRef := firstNonEmpty(planvalidator.EvidenceString(operation, "keycloak_group_id"), groupPath)
+		return s.Keycloak.DeleteGroup(ctx, syncPlan.Realm, groupRef)
+	default:
+		return fmt.Errorf("unsupported operation action %q", operation.Action)
+	}
+}
+
+func newMutationResult(syncPlan domain.SyncPlan, operation domain.PlanOperation) domain.MutationResult {
+	mutation := domain.MutationResult{
+		OperationID: operation.OperationID,
+		Status:      "pending",
+		Operation:   operation.Action,
+		Target:      operation.Target,
+		Warnings:    []domain.Warning{},
+	}
+	groupPath, username := mutationTargetParts(operation)
+	mutation.KeycloakMirror = &domain.SystemMutationResult{
+		Realm:  syncPlan.Realm,
+		Group:  groupPath,
+		User:   username,
+		Zone:   syncPlan.Zone,
+		Status: "pending",
+	}
+	return mutation
+}
+
+func mutationTargetParts(operation domain.PlanOperation) (string, string) {
+	if strings.Contains(operation.Target, "#member:") {
+		groupPath, username, err := planvalidator.MemberTarget(operation)
+		if err == nil {
+			return groupPath, username
+		}
+	}
+	groupPath, err := planvalidator.GroupTarget(operation)
+	if err == nil {
+		return groupPath, ""
+	}
+	return operation.Target, ""
+}
+
 func (s *Service) validate() error {
 	if s == nil {
 		return errors.New("repair service is required")
 	}
 	if s.IRODS == nil {
 		return errors.New("irods adapter is required")
+	}
+	if s.Keycloak == nil {
+		return errors.New("keycloak admin client is required")
+	}
+	return nil
+}
+
+func (s *Service) validateKeycloak() error {
+	if s == nil {
+		return errors.New("repair service is required")
 	}
 	if s.Keycloak == nil {
 		return errors.New("keycloak admin client is required")
@@ -177,7 +352,7 @@ func (s *Service) keycloakGroupMapping(realm string, zone string, group keycloak
 	path := strings.TrimSpace(group.Path)
 	mirrorName := firstAttribute(group.Attributes, mirrorAttrGroupName)
 	authority := strings.ToLower(firstAttribute(group.Attributes, mirrorAttrAuthority))
-	if mirrorName == "" && authority != authorityIRODS && !strings.HasPrefix(path, defaultKeycloakGroupRoot+"/") {
+	if mirrorName == "" && authority != domain.SyncPlanAuthorityIRODS && !strings.HasPrefix(path, defaultKeycloakGroupRoot+"/") {
 		return "", "", false
 	}
 
@@ -201,7 +376,7 @@ func (s *Service) keycloakGroupMapping(realm string, zone string, group keycloak
 		return "", "", false
 	}
 
-	if authority != "" && authority != authorityIRODS {
+	if authority != "" && authority != domain.SyncPlanAuthorityIRODS {
 		return "", "", false
 	}
 
@@ -210,13 +385,14 @@ func (s *Service) keycloakGroupMapping(realm string, zone string, group keycloak
 
 func (s *Service) planRepair(realm string, zone string, irodsGroups map[string]irodsGroupSnapshot, keycloakGroups map[string]keycloakGroupSnapshot) domain.SyncPlan {
 	plan := domain.SyncPlan{
-		PlanID:     newPlanID(),
-		Mode:       modeRepairKeycloak,
-		Authority:  authorityIRODS,
-		Realm:      realm,
-		Zone:       zone,
-		Summary:    domain.PlanSummary{},
-		Operations: []domain.PlanOperation{},
+		PlanFormatVersion: domain.SyncPlanFormatVersion,
+		PlanID:            newPlanID(),
+		Mode:              domain.SyncPlanModeRepairKeycloak,
+		Authority:         domain.SyncPlanAuthorityIRODS,
+		Realm:             realm,
+		Zone:              zone,
+		Summary:           domain.PlanSummary{},
+		Operations:        []domain.PlanOperation{},
 	}
 
 	operationIndex := 1
@@ -229,7 +405,7 @@ func (s *Service) planRepair(realm string, zone string, irodsGroups map[string]i
 		}
 
 		if !exists {
-			plan.Operations = append(plan.Operations, newOperation(operationIndex, "keycloak.group.create", groupPath, "low", map[string]any{
+			plan.Operations = append(plan.Operations, newOperation(operationIndex, domain.PlanActionKeycloakGroupCreate, groupPath, "low", map[string]any{
 				"irods_group_name": groupName,
 				"irods_zone":       irodsGroup.Zone,
 				"keycloak_realm":   realm,
@@ -240,16 +416,18 @@ func (s *Service) planRepair(realm string, zone string, irodsGroups map[string]i
 		}
 
 		for _, username := range sortedSet(irodsGroup.Members) {
-			if exists && setContains(keycloakGroup.Members, username) {
+			if exists && mapContains(keycloakGroup.Members, username) {
 				continue
 			}
-			plan.Operations = append(plan.Operations, newOperation(operationIndex, "keycloak.group.member.add", memberTarget(groupPath, username), "low", map[string]any{
+			evidence := map[string]any{
 				"irods_group_name": groupName,
 				"irods_username":   username,
 				"irods_zone":       irodsGroup.Zone,
 				"keycloak_realm":   realm,
 				"keycloak_path":    groupPath,
-			}))
+			}
+			addNonEmptyEvidence(evidence, "keycloak_group_id", keycloakGroup.ID)
+			plan.Operations = append(plan.Operations, newOperation(operationIndex, domain.PlanActionKeycloakGroupMemberAdd, memberTarget(groupPath, username), "low", evidence))
 			operationIndex++
 			plan.Summary.UpdateKeycloakMemberships++
 		}
@@ -257,17 +435,20 @@ func (s *Service) planRepair(realm string, zone string, irodsGroups map[string]i
 		if !exists {
 			continue
 		}
-		for _, username := range sortedSet(keycloakGroup.Members) {
+		for _, username := range sortedKeys(keycloakGroup.Members) {
 			if setContains(irodsGroup.Members, username) {
 				continue
 			}
-			plan.Operations = append(plan.Operations, newOperation(operationIndex, "keycloak.group.member.remove", memberTarget(groupPath, username), "medium", map[string]any{
+			evidence := map[string]any{
 				"irods_group_name": groupName,
 				"keycloak_user":    username,
 				"irods_zone":       irodsGroup.Zone,
 				"keycloak_realm":   realm,
 				"keycloak_path":    groupPath,
-			}))
+			}
+			addNonEmptyEvidence(evidence, "keycloak_group_id", keycloakGroup.ID)
+			addNonEmptyEvidence(evidence, "keycloak_user_id", keycloakGroup.Members[username])
+			plan.Operations = append(plan.Operations, newOperation(operationIndex, domain.PlanActionKeycloakGroupMemberRemove, memberTarget(groupPath, username), "medium", evidence))
 			operationIndex++
 			plan.Summary.UpdateKeycloakMemberships++
 		}
@@ -278,12 +459,14 @@ func (s *Service) planRepair(realm string, zone string, irodsGroups map[string]i
 			continue
 		}
 		keycloakGroup := keycloakGroups[groupName]
-		plan.Operations = append(plan.Operations, newOperation(operationIndex, "keycloak.group.delete", keycloakGroup.Path, "requires_approval", map[string]any{
+		evidence := map[string]any{
 			"irods_group_name": groupName,
 			"irods_zone":       keycloakGroup.Zone,
 			"keycloak_realm":   realm,
 			"keycloak_path":    keycloakGroup.Path,
-		}))
+		}
+		addNonEmptyEvidence(evidence, "keycloak_group_id", keycloakGroup.ID)
+		plan.Operations = append(plan.Operations, newOperation(operationIndex, domain.PlanActionKeycloakGroupDelete, keycloakGroup.Path, domain.PlanRiskRequiresApproval, evidence))
 		operationIndex++
 		plan.Summary.DeleteKeycloakMirrors++
 		plan.Summary.RequiresApproval++
@@ -305,11 +488,11 @@ func irodsMemberSet(members []*irodstypes.IRODSUser) map[string]struct{} {
 	return result
 }
 
-func keycloakMemberSet(members []keycloakadmin.User) map[string]struct{} {
-	result := map[string]struct{}{}
+func keycloakMemberSet(members []keycloakadmin.User) map[string]string {
+	result := map[string]string{}
 	for _, member := range members {
 		if name := strings.TrimSpace(member.Username); name != "" {
-			result[name] = struct{}{}
+			result[name] = strings.TrimSpace(member.ID)
 		}
 	}
 	return result
@@ -322,6 +505,13 @@ func newOperation(index int, action string, target string, risk string, evidence
 		Target:      target,
 		Risk:        risk,
 		Evidence:    evidence,
+	}
+}
+
+func addNonEmptyEvidence(evidence map[string]any, key string, value string) {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		evidence[key] = value
 	}
 }
 
@@ -378,10 +568,24 @@ func setContains(values map[string]struct{}, key string) bool {
 	return ok
 }
 
+func mapContains[T any](values map[string]T, key string) bool {
+	_, ok := values[key]
+	return ok
+}
+
 func stringOrDefault(value string, fallback string) string {
 	value = strings.TrimSpace(value)
 	if value != "" {
 		return value
 	}
 	return fallback
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }

@@ -3,16 +3,16 @@ package keycloakadmin
 import "context"
 
 type User struct {
-	ID         string              `json:"id"`
+	ID         string              `json:"id,omitempty"`
 	Username   string              `json:"username"`
 	Email      string              `json:"email,omitempty"`
 	Attributes map[string][]string `json:"attributes,omitempty"`
 }
 
 type Group struct {
-	ID         string              `json:"id"`
-	Path       string              `json:"path"`
-	Name       string              `json:"name"`
+	ID         string              `json:"id,omitempty"`
+	Path       string              `json:"path,omitempty"`
+	Name       string              `json:"name,omitempty"`
 	Attributes map[string][]string `json:"attributes,omitempty"`
 }
 
@@ -26,7 +26,7 @@ type Client interface {
 	ListGroupMembers(ctx context.Context, realm string, groupID string) ([]User, error)
 	CreateOrUpdateUser(ctx context.Context, realm string, user User) (*User, error)
 	CreateOrUpdateGroup(ctx context.Context, realm string, group Group) (*Group, error)
-	DeleteGroup(ctx context.Context, realm string, groupPath string) error
-	AddUserToGroup(ctx context.Context, realm string, userID string, groupPath string) error
-	RemoveUserFromGroup(ctx context.Context, realm string, userID string, groupPath string) error
+	DeleteGroup(ctx context.Context, realm string, groupIDOrPath string) error
+	AddUserToGroup(ctx context.Context, realm string, userIDOrUsername string, groupIDOrPath string) error
+	RemoveUserFromGroup(ctx context.Context, realm string, userIDOrUsername string, groupIDOrPath string) error
 }

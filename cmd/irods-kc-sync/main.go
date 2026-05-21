@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/michael-conway/irods-keycloak-admin/internal/irodsadapter"
 	"github.com/michael-conway/irods-keycloak-admin/internal/keycloakadmin"
 	"github.com/michael-conway/irods-keycloak-admin/internal/mapper"
+	"github.com/michael-conway/irods-keycloak-admin/internal/planreview"
 	"github.com/michael-conway/irods-keycloak-admin/internal/workflow/repair"
 )
 
@@ -36,7 +39,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	switch args[0] {
 	case "repair-keycloak":
 		return runRepairKeycloak(args[1:], stdout, stderr)
-	case "plan", "apply", "bootstrap-keycloak":
+	case "apply":
+		return runApply(args[1:], stdout, stderr)
+	case "plan", "bootstrap-keycloak":
 		_, _ = fmt.Fprintf(stderr, "irods-kc-sync %s is scaffolded but not implemented yet\n", args[0])
 		return 1
 	default:
@@ -68,6 +73,8 @@ func runRepairKeycloak(args []string, stdout io.Writer, stderr io.Writer) int {
 	keycloakAdminUser := flags.String("keycloak-admin-user", envFirst("IRODS_KC_KEYCLOAK_ADMIN_USER", "IRODS_KC_E2E_KEYCLOAK_ADMIN_USER", "KEYCLOAK_ADMIN"), "Keycloak admin username")
 	keycloakAdminPassword := flags.String("keycloak-admin-password", envFirst("IRODS_KC_KEYCLOAK_ADMIN_PASSWORD", "IRODS_KC_E2E_KEYCLOAK_ADMIN_PASSWORD", "KEYCLOAK_ADMIN_PASSWORD"), "Keycloak admin password")
 	keycloakInsecureSkipVerify := flags.Bool("keycloak-insecure-skip-verify", envBool(false, "IRODS_KC_KEYCLOAK_INSECURE_SKIP_VERIFY", "IRODS_KC_E2E_KEYCLOAK_INSECURE_SKIP_VERIFY"), "skip Keycloak TLS certificate verification for local test stacks")
+	outPath := flags.String("out", "", "write the dry-run plan JSON to this file while also preserving stdout JSON")
+	planPath := flags.String("plan-path", "", "alias for --out")
 
 	if err := flags.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -85,6 +92,11 @@ func runRepairKeycloak(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if strings.TrimSpace(*realm) == "" {
 		_, _ = fmt.Fprintln(stderr, "Keycloak realm is required; pass --realm or set IRODS_KC_KEYCLOAK_REALM")
+		return 2
+	}
+	outputPath, err := resolvePlanOutputPath(*outPath, *planPath)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
 
@@ -146,10 +158,111 @@ func runRepairKeycloak(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	encoder := json.NewEncoder(stdout)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(plan); err != nil {
+	if outputPath != "" {
+		if err := writePlanFile(outputPath, plan); err != nil {
+			_, _ = fmt.Fprintf(stderr, "write plan file: %v\n", err)
+			return 1
+		}
+	}
+	if err := writePlanJSON(stdout, plan); err != nil {
 		_, _ = fmt.Fprintf(stderr, "write plan: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func runApply(args []string, stdout io.Writer, stderr io.Writer) int {
+	cfg := config.FromEnv()
+	flags := flag.NewFlagSet("apply", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	planPath := flags.String("plan", "", "repair-keycloak plan JSON to apply")
+	realm := flags.String("realm", firstNonEmpty(cfg.KeycloakRealm, envFirst("IRODS_KC_E2E_KEYCLOAK_REALM")), "expected Keycloak realm for the plan")
+	zone := flags.String("zone", firstNonEmpty(cfg.IRODSZone, envFirst("IRODS_KC_E2E_IRODS_ZONE")), "expected iRODS zone for the plan")
+	prompts := flags.String("prompts", string(planreview.PromptModeRequired), "prompt policy: required, all, or none")
+
+	keycloakURL := flags.String("keycloak-url", envFirst("IRODS_KC_KEYCLOAK_BASE_URL", "IRODS_KC_E2E_KEYCLOAK_BASE_URL"), "Keycloak base URL")
+	keycloakAdminRealm := flags.String("keycloak-admin-realm", envFirst("IRODS_KC_KEYCLOAK_ADMIN_REALM"), "Keycloak realm used to obtain the admin token")
+	keycloakClientID := flags.String("keycloak-client-id", envFirst("IRODS_KC_KEYCLOAK_ADMIN_CLIENT_ID"), "Keycloak admin token client ID")
+	keycloakClientSecret := flags.String("keycloak-client-secret", envFirst("IRODS_KC_KEYCLOAK_ADMIN_CLIENT_SECRET"), "Keycloak admin token client secret")
+	keycloakAdminUser := flags.String("keycloak-admin-user", envFirst("IRODS_KC_KEYCLOAK_ADMIN_USER", "IRODS_KC_E2E_KEYCLOAK_ADMIN_USER", "KEYCLOAK_ADMIN"), "Keycloak admin username")
+	keycloakAdminPassword := flags.String("keycloak-admin-password", envFirst("IRODS_KC_KEYCLOAK_ADMIN_PASSWORD", "IRODS_KC_E2E_KEYCLOAK_ADMIN_PASSWORD", "KEYCLOAK_ADMIN_PASSWORD"), "Keycloak admin password")
+	keycloakInsecureSkipVerify := flags.Bool("keycloak-insecure-skip-verify", envBool(false, "IRODS_KC_KEYCLOAK_INSECURE_SKIP_VERIFY", "IRODS_KC_E2E_KEYCLOAK_INSECURE_SKIP_VERIFY"), "skip Keycloak TLS certificate verification for local test stacks")
+
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if flags.NArg() != 0 {
+		_, _ = fmt.Fprintf(stderr, "unexpected arguments: %s\n", strings.Join(flags.Args(), " "))
+		return 2
+	}
+	if strings.TrimSpace(*planPath) == "" {
+		_, _ = fmt.Fprintln(stderr, "plan file is required; pass --plan plan.json")
+		return 2
+	}
+	promptMode := planreview.PromptMode(strings.ToLower(strings.TrimSpace(*prompts)))
+	if err := planreview.ValidatePromptMode(promptMode); err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+		return 2
+	}
+
+	syncPlan, err := readPlanFile(*planPath)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "read plan file: %v\n", err)
+		return 1
+	}
+	if strings.TrimSpace(*realm) == "" {
+		*realm = syncPlan.Realm
+	}
+	if strings.TrimSpace(*zone) == "" {
+		*zone = syncPlan.Zone
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	keycloakClient, err := keycloakadmin.NewHTTPClient(keycloakadmin.HTTPClientConfig{
+		BaseURL:            firstNonEmpty(*keycloakURL, "https://127.0.0.1:8443"),
+		AdminRealm:         *keycloakAdminRealm,
+		ClientID:           *keycloakClientID,
+		ClientSecret:       *keycloakClientSecret,
+		Username:           *keycloakAdminUser,
+		Password:           *keycloakAdminPassword,
+		InsecureSkipVerify: *keycloakInsecureSkipVerify,
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "initialize Keycloak client: %v\n", err)
+		return 1
+	}
+
+	service := repair.Service{
+		Keycloak:     keycloakClient,
+		DefaultRealm: *realm,
+		DefaultZone:  *zone,
+		PromptMode:   promptMode,
+	}
+	if promptMode != planreview.PromptModeNone {
+		service.Reviewer = newTerminalReviewer(os.Stdin, stderr)
+	}
+	result, err := service.Apply(ctx, domain.ApplyRequest{
+		RequestMetadata: domain.RequestMetadata{
+			Realm: *realm,
+			Zone:  *zone,
+		},
+		Plan: &syncPlan,
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "apply failed: %v\n", err)
+		return 1
+	}
+	if err := writeApplyResultJSON(stdout, result); err != nil {
+		_, _ = fmt.Fprintf(stderr, "write apply result: %v\n", err)
+		return 1
+	}
+	if result.Failed > 0 {
 		return 1
 	}
 	return 0
@@ -164,9 +277,124 @@ func newIRODSClient(envFile string, cfg irodsadapter.ConnectionConfig) (*irodsad
 	return client, account, err
 }
 
+func resolvePlanOutputPath(outPath string, planPath string) (string, error) {
+	outPath = strings.TrimSpace(outPath)
+	planPath = strings.TrimSpace(planPath)
+	if outPath != "" && planPath != "" && outPath != planPath {
+		return "", fmt.Errorf("--out and --plan-path must match when both are provided")
+	}
+	if outPath != "" {
+		return outPath, nil
+	}
+	return planPath, nil
+}
+
+func writePlanFile(path string, plan domain.SyncPlan) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return writePlanJSON(file, plan)
+}
+
+func readPlanFile(path string) (domain.SyncPlan, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return domain.SyncPlan{}, err
+	}
+	defer file.Close()
+
+	var plan domain.SyncPlan
+	if err := json.NewDecoder(file).Decode(&plan); err != nil {
+		return domain.SyncPlan{}, err
+	}
+	return plan, nil
+}
+
+func writePlanJSON(writer io.Writer, plan domain.SyncPlan) error {
+	return writeIndentedJSON(writer, plan)
+}
+
+func writeApplyResultJSON(writer io.Writer, result domain.ApplyResult) error {
+	return writeIndentedJSON(writer, result)
+}
+
+func writeIndentedJSON(writer io.Writer, value any) error {
+	encoder := json.NewEncoder(writer)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(value)
+}
+
 func usage(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "usage: irods-kc-sync {plan|apply|bootstrap-keycloak|repair-keycloak}")
-	_, _ = fmt.Fprintln(out, "       irods-kc-sync repair-keycloak --dry-run [--realm REALM] [--zone ZONE]")
+	_, _ = fmt.Fprintln(out, "       irods-kc-sync repair-keycloak --dry-run [--realm REALM] [--zone ZONE] [--out PLAN.json]")
+	_, _ = fmt.Fprintln(out, "       irods-kc-sync apply --plan PLAN.json [--realm REALM] [--zone ZONE] [--prompts required|all|none]")
+}
+
+type terminalReviewer struct {
+	input  *bufio.Reader
+	output io.Writer
+}
+
+func newTerminalReviewer(input io.Reader, output io.Writer) *terminalReviewer {
+	return &terminalReviewer{
+		input:  bufio.NewReader(input),
+		output: output,
+	}
+}
+
+func (r *terminalReviewer) Review(_ context.Context, syncPlan domain.SyncPlan, operation domain.PlanOperation) (planreview.Decision, error) {
+	printOperationReview(r.output, syncPlan, operation)
+	for {
+		_, _ = fmt.Fprint(r.output, "Decision [a]ccept, [s]kip, [aa]accept all, [ss]skip all: ")
+		line, err := r.input.ReadString('\n')
+		if err != nil && !(err == io.EOF && strings.TrimSpace(line) != "") {
+			return "", err
+		}
+		decision, normalizeErr := planreview.NormalizeDecision(planreview.Decision(line))
+		if normalizeErr == nil {
+			return decision, nil
+		}
+		_, _ = fmt.Fprintf(r.output, "Invalid decision: %v\n", normalizeErr)
+	}
+}
+
+func printOperationReview(out io.Writer, syncPlan domain.SyncPlan, operation domain.PlanOperation) {
+	_, _ = fmt.Fprintf(out, "\nPlan: %s  Realm: %s  Zone: %s\n", syncPlan.PlanID, syncPlan.Realm, syncPlan.Zone)
+	_, _ = fmt.Fprintf(out, "Operation: %s\n", operation.OperationID)
+	_, _ = fmt.Fprintf(out, "Action: %s\n", operation.Action)
+	_, _ = fmt.Fprintf(out, "Target: %s\n", operation.Target)
+	_, _ = fmt.Fprintf(out, "Risk: %s\n", operation.Risk)
+	if len(operation.Evidence) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintln(out, "Evidence:")
+	for _, key := range sortedEvidenceKeys(operation.Evidence) {
+		_, _ = fmt.Fprintf(out, "  %s: %s\n", key, formatEvidenceValue(operation.Evidence[key]))
+	}
+}
+
+func sortedEvidenceKeys(evidence map[string]any) []string {
+	keys := make([]string, 0, len(evidence))
+	for key := range evidence {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func formatEvidenceValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	default:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return fmt.Sprint(typed)
+		}
+		return string(encoded)
+	}
 }
 
 func firstNonEmpty(values ...string) string {

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	pathpkg "path"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,9 +34,8 @@ type HTTPClientConfig struct {
 	HTTPClient         *http.Client
 }
 
-// HTTPClient is a minimal Keycloak Admin REST client for sync planning. The
-// current repair slice uses read operations only; mutation methods are left
-// unimplemented until apply workflows are introduced.
+// HTTPClient is a Keycloak Admin REST client for sync planning and controlled
+// mirror repair apply workflows.
 type HTTPClient struct {
 	baseURL      *url.URL
 	adminRealm   string
@@ -173,37 +173,322 @@ func (c *HTTPClient) ListGroupMembers(ctx context.Context, realm string, groupID
 	return users, nil
 }
 
-func (c *HTTPClient) CreateOrUpdateUser(context.Context, string, User) (*User, error) {
-	return nil, errors.New("keycloak user mutation is not implemented")
+func (c *HTTPClient) CreateOrUpdateUser(ctx context.Context, realm string, user User) (*User, error) {
+	user.Username = strings.TrimSpace(user.Username)
+	user.ID = strings.TrimSpace(user.ID)
+	if user.Username == "" && user.ID == "" {
+		return nil, errors.New("keycloak user username or id is required")
+	}
+
+	if user.ID == "" && user.Username != "" {
+		existing, err := c.FindUserByUsername(ctx, realm, user.Username)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			user.ID = existing.ID
+			if user.Attributes == nil {
+				user.Attributes = existing.Attributes
+			}
+			if user.Email == "" {
+				user.Email = existing.Email
+			}
+		}
+	}
+
+	if user.ID != "" {
+		if user.Username == "" {
+			existing, err := c.GetUser(ctx, realm, user.ID)
+			if err != nil {
+				return nil, err
+			}
+			if existing != nil {
+				user.Username = existing.Username
+				if user.Attributes == nil {
+					user.Attributes = existing.Attributes
+				}
+				if user.Email == "" {
+					user.Email = existing.Email
+				}
+			}
+		}
+		if err := c.doJSON(ctx, http.MethodPut, c.adminPath(realm, "users", user.ID), user, nil); err != nil {
+			return nil, err
+		}
+		return c.GetUser(ctx, realm, user.ID)
+	}
+
+	if err := c.doJSON(ctx, http.MethodPost, c.adminPath(realm, "users"), user, nil); err != nil {
+		if !isKeycloakStatus(err, http.StatusConflict) {
+			return nil, err
+		}
+	}
+	created, err := c.FindUserByUsername(ctx, realm, user.Username)
+	if err != nil {
+		return nil, err
+	}
+	if created != nil {
+		return created, nil
+	}
+	return &user, nil
 }
 
-func (c *HTTPClient) CreateOrUpdateGroup(context.Context, string, Group) (*Group, error) {
-	return nil, errors.New("keycloak group mutation is not implemented")
+func (c *HTTPClient) CreateOrUpdateGroup(ctx context.Context, realm string, group Group) (*Group, error) {
+	groupPath, err := normalizeGroupPath(group)
+	if err != nil {
+		return nil, err
+	}
+	groupName := strings.TrimSpace(group.Name)
+	if groupName == "" {
+		groupName = groupNameFromPath(groupPath)
+	}
+
+	existing, err := c.findGroupByPath(ctx, realm, groupPath)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		attributes := group.Attributes
+		if attributes == nil {
+			attributes = existing.Attributes
+		}
+		body := Group{
+			ID:         existing.ID,
+			Path:       groupPath,
+			Name:       groupName,
+			Attributes: attributes,
+		}
+		if err := c.doJSON(ctx, http.MethodPut, c.adminPath(realm, "groups", existing.ID), body, nil); err != nil {
+			return nil, err
+		}
+		return c.findGroupByPath(ctx, realm, groupPath)
+	}
+
+	parentPath := parentGroupPath(groupPath)
+	var createPath string
+	if parentPath == "" {
+		createPath = c.adminPath(realm, "groups")
+	} else {
+		parent, err := c.ensureGroupPath(ctx, realm, parentPath)
+		if err != nil {
+			return nil, err
+		}
+		createPath = c.adminPath(realm, "groups", parent.ID, "children")
+	}
+
+	body := Group{
+		Name:       groupName,
+		Attributes: group.Attributes,
+	}
+	if err := c.doJSON(ctx, http.MethodPost, createPath, body, nil); err != nil {
+		if !isKeycloakStatus(err, http.StatusConflict) {
+			return nil, err
+		}
+	}
+	created, err := c.findGroupByPath(ctx, realm, groupPath)
+	if err != nil {
+		return nil, err
+	}
+	if created == nil {
+		return nil, fmt.Errorf("keycloak group %q was not found after create", groupPath)
+	}
+	return created, nil
 }
 
-func (c *HTTPClient) DeleteGroup(context.Context, string, string) error {
-	return errors.New("keycloak group deletion is not implemented")
+func (c *HTTPClient) DeleteGroup(ctx context.Context, realm string, groupIDOrPath string) error {
+	groupIDOrPath = strings.TrimSpace(groupIDOrPath)
+	if groupIDOrPath == "" {
+		return errors.New("keycloak group id or path is required")
+	}
+
+	groupID := groupIDOrPath
+	if strings.HasPrefix(groupIDOrPath, "/") {
+		group, err := c.findGroupByPath(ctx, realm, groupIDOrPath)
+		if err != nil {
+			return err
+		}
+		if group == nil {
+			return nil
+		}
+		groupID = group.ID
+	}
+
+	if err := c.doJSON(ctx, http.MethodDelete, c.adminPath(realm, "groups", groupID), nil, nil); err != nil {
+		if isKeycloakStatus(err, http.StatusNotFound) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
-func (c *HTTPClient) AddUserToGroup(context.Context, string, string, string) error {
-	return errors.New("keycloak group membership mutation is not implemented")
+func (c *HTTPClient) AddUserToGroup(ctx context.Context, realm string, userIDOrUsername string, groupIDOrPath string) error {
+	groupID, err := c.resolveGroupID(ctx, realm, groupIDOrPath)
+	if err != nil {
+		return err
+	}
+	userID, user, err := c.resolveUserID(ctx, realm, userIDOrUsername)
+	if err != nil {
+		return err
+	}
+	if userID == "" {
+		return fmt.Errorf("keycloak user %q not found", strings.TrimSpace(userIDOrUsername))
+	}
+	members, err := c.ListGroupMembers(ctx, realm, groupID)
+	if err != nil {
+		return err
+	}
+	if memberMatches(members, userID, userIDOrUsername, user) {
+		return nil
+	}
+	return c.doJSON(ctx, http.MethodPut, c.adminPath(realm, "users", userID, "groups", groupID), nil, nil)
 }
 
-func (c *HTTPClient) RemoveUserFromGroup(context.Context, string, string, string) error {
-	return errors.New("keycloak group membership mutation is not implemented")
+func (c *HTTPClient) RemoveUserFromGroup(ctx context.Context, realm string, userIDOrUsername string, groupIDOrPath string) error {
+	groupID, err := c.resolveExistingGroupID(ctx, realm, groupIDOrPath)
+	if err != nil {
+		return err
+	}
+	if groupID == "" {
+		return nil
+	}
+
+	userID, user, err := c.resolveUserID(ctx, realm, userIDOrUsername)
+	if err != nil {
+		return err
+	}
+	members, err := c.ListGroupMembers(ctx, realm, groupID)
+	if err != nil {
+		if isKeycloakStatus(err, http.StatusNotFound) {
+			return nil
+		}
+		return err
+	}
+	member := matchingMember(members, userID, userIDOrUsername, user)
+	if member == nil {
+		return nil
+	}
+	if userID == "" {
+		userID = member.ID
+	}
+	if err := c.doJSON(ctx, http.MethodDelete, c.adminPath(realm, "users", userID, "groups", groupID), nil, nil); err != nil {
+		if isKeycloakStatus(err, http.StatusNotFound) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (c *HTTPClient) findGroupIDByPath(ctx context.Context, realm string, groupPath string) (string, error) {
-	groups, err := c.ListGroups(ctx, realm)
+	group, err := c.findGroupByPath(ctx, realm, groupPath)
 	if err != nil {
 		return "", err
 	}
+	if group == nil {
+		return "", fmt.Errorf("keycloak group path %q not found", groupPath)
+	}
+	return group.ID, nil
+}
+
+func (c *HTTPClient) findGroupByPath(ctx context.Context, realm string, groupPath string) (*Group, error) {
+	groupPath = normalizeAbsolutePath(groupPath)
+	groups, err := c.ListGroups(ctx, realm)
+	if err != nil {
+		return nil, err
+	}
 	for _, group := range groups {
-		if group.Path == groupPath {
-			return group.ID, nil
+		if normalizeAbsolutePath(group.Path) == groupPath {
+			groupCopy := group
+			return &groupCopy, nil
 		}
 	}
-	return "", fmt.Errorf("keycloak group path %q not found", groupPath)
+	return nil, nil
+}
+
+func (c *HTTPClient) ensureGroupPath(ctx context.Context, realm string, groupPath string) (*Group, error) {
+	groupPath = normalizeAbsolutePath(groupPath)
+	if groupPath == "" || groupPath == "/" {
+		return nil, errors.New("keycloak group path is required")
+	}
+	existing, err := c.findGroupByPath(ctx, realm, groupPath)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		return existing, nil
+	}
+
+	parentPath := parentGroupPath(groupPath)
+	var createPath string
+	if parentPath == "" {
+		createPath = c.adminPath(realm, "groups")
+	} else {
+		parent, err := c.ensureGroupPath(ctx, realm, parentPath)
+		if err != nil {
+			return nil, err
+		}
+		createPath = c.adminPath(realm, "groups", parent.ID, "children")
+	}
+
+	body := Group{Name: groupNameFromPath(groupPath)}
+	if err := c.doJSON(ctx, http.MethodPost, createPath, body, nil); err != nil {
+		if !isKeycloakStatus(err, http.StatusConflict) {
+			return nil, err
+		}
+	}
+	created, err := c.findGroupByPath(ctx, realm, groupPath)
+	if err != nil {
+		return nil, err
+	}
+	if created == nil {
+		return nil, fmt.Errorf("keycloak group %q was not found after create", groupPath)
+	}
+	return created, nil
+}
+
+func (c *HTTPClient) resolveGroupID(ctx context.Context, realm string, groupIDOrPath string) (string, error) {
+	groupID, err := c.resolveExistingGroupID(ctx, realm, groupIDOrPath)
+	if err != nil {
+		return "", err
+	}
+	if groupID == "" {
+		return "", fmt.Errorf("keycloak group %q not found", strings.TrimSpace(groupIDOrPath))
+	}
+	return groupID, nil
+}
+
+func (c *HTTPClient) resolveExistingGroupID(ctx context.Context, realm string, groupIDOrPath string) (string, error) {
+	groupIDOrPath = strings.TrimSpace(groupIDOrPath)
+	if groupIDOrPath == "" {
+		return "", errors.New("keycloak group id or path is required")
+	}
+	if !strings.HasPrefix(groupIDOrPath, "/") {
+		return groupIDOrPath, nil
+	}
+	group, err := c.findGroupByPath(ctx, realm, groupIDOrPath)
+	if err != nil {
+		return "", err
+	}
+	if group == nil {
+		return "", nil
+	}
+	return group.ID, nil
+}
+
+func (c *HTTPClient) resolveUserID(ctx context.Context, realm string, userIDOrUsername string) (string, *User, error) {
+	userIDOrUsername = strings.TrimSpace(userIDOrUsername)
+	if userIDOrUsername == "" {
+		return "", nil, errors.New("keycloak user id or username is required")
+	}
+	user, err := c.FindUserByUsername(ctx, realm, userIDOrUsername)
+	if err != nil {
+		return "", nil, err
+	}
+	if user != nil {
+		return user.ID, user, nil
+	}
+	return userIDOrUsername, nil, nil
 }
 
 func (c *HTTPClient) appendGroupHierarchy(ctx context.Context, realm string, result []Group, seen map[string]struct{}, group groupResponse) ([]Group, error) {
@@ -221,14 +506,18 @@ func (c *HTTPClient) appendGroupHierarchy(ctx context.Context, realm string, res
 		Attributes: group.Attributes,
 	})
 
-	children, err := c.listGroupChildren(ctx, realm, group.ID)
-	if err != nil {
-		return nil, err
-	}
-	if len(children) == 0 {
-		children = group.SubGroups
+	children := group.SubGroups
+	if group.SubGroupCount > 0 {
+		loadedChildren, err := c.listGroupChildren(ctx, realm, group.ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(loadedChildren) > 0 {
+			children = loadedChildren
+		}
 	}
 	for _, subgroup := range children {
+		var err error
 		result, err = c.appendGroupHierarchy(ctx, realm, result, seen, subgroup)
 		if err != nil {
 			return nil, err
@@ -259,6 +548,77 @@ func (c *HTTPClient) listGroupChildren(ctx context.Context, realm string, groupI
 		}
 	}
 	return result, nil
+}
+
+func normalizeGroupPath(group Group) (string, error) {
+	if strings.TrimSpace(group.Path) != "" {
+		return normalizeAbsolutePath(group.Path), nil
+	}
+	if strings.TrimSpace(group.Name) != "" {
+		return normalizeAbsolutePath("/" + group.Name), nil
+	}
+	return "", errors.New("keycloak group path or name is required")
+}
+
+func normalizeAbsolutePath(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	cleaned := pathpkg.Clean(value)
+	if cleaned == "." {
+		return ""
+	}
+	return cleaned
+}
+
+func groupNameFromPath(groupPath string) string {
+	groupPath = normalizeAbsolutePath(groupPath)
+	if groupPath == "" || groupPath == "/" {
+		return ""
+	}
+	return pathpkg.Base(groupPath)
+}
+
+func parentGroupPath(groupPath string) string {
+	groupPath = normalizeAbsolutePath(groupPath)
+	if groupPath == "" || groupPath == "/" {
+		return ""
+	}
+	parent := pathpkg.Dir(groupPath)
+	if parent == "." || parent == "/" {
+		return ""
+	}
+	return parent
+}
+
+func memberMatches(members []User, userID string, userIDOrUsername string, resolvedUser *User) bool {
+	return matchingMember(members, userID, userIDOrUsername, resolvedUser) != nil
+}
+
+func matchingMember(members []User, userID string, userIDOrUsername string, resolvedUser *User) *User {
+	userID = strings.TrimSpace(userID)
+	userIDOrUsername = strings.TrimSpace(userIDOrUsername)
+	resolvedUsername := ""
+	if resolvedUser != nil {
+		resolvedUsername = strings.TrimSpace(resolvedUser.Username)
+	}
+	for i := range members {
+		member := &members[i]
+		if userID != "" && strings.TrimSpace(member.ID) == userID {
+			return member
+		}
+		if userIDOrUsername != "" && strings.TrimSpace(member.Username) == userIDOrUsername {
+			return member
+		}
+		if resolvedUsername != "" && strings.TrimSpace(member.Username) == resolvedUsername {
+			return member
+		}
+	}
+	return nil
 }
 
 func (c *HTTPClient) doJSON(ctx context.Context, method string, path string, body any, out any) error {
@@ -297,7 +657,7 @@ func (c *HTTPClient) doJSON(ctx context.Context, method string, path string, bod
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return keycloakStatusError(resp)
+		return keycloakStatusError(resp, method, requestURL)
 	}
 	if out == nil || resp.StatusCode == http.StatusNoContent {
 		return nil
@@ -346,7 +706,7 @@ func (c *HTTPClient) accessToken(ctx context.Context) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", keycloakStatusError(resp)
+		return "", keycloakStatusError(resp, http.MethodPost, c.realmPath(c.adminRealm, "protocol", "openid-connect", "token"))
 	}
 
 	var token tokenResponse
@@ -407,13 +767,53 @@ func pathJoin(parts ...string) string {
 	return "/" + strings.Join(escaped, "/")
 }
 
-func keycloakStatusError(resp *http.Response) error {
+func keycloakStatusError(resp *http.Response, method string, requestURL string) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	text := strings.TrimSpace(string(body))
-	if text == "" {
-		return fmt.Errorf("keycloak admin request failed: %s", resp.Status)
+	return &StatusError{
+		StatusCode: resp.StatusCode,
+		Status:     resp.Status,
+		Body:       text,
+		Method:     method,
+		URL:        requestURL,
 	}
-	return fmt.Errorf("keycloak admin request failed: %s: %s", resp.Status, text)
+}
+
+type StatusError struct {
+	StatusCode int
+	Status     string
+	Body       string
+	Method     string
+	URL        string
+}
+
+func (e *StatusError) Error() string {
+	if e == nil {
+		return ""
+	}
+	request := strings.TrimSpace(strings.Join([]string{e.Method, e.URL}, " "))
+	if request == "" {
+		request = "keycloak admin request"
+	} else {
+		request = "keycloak admin request " + request
+	}
+	if e.Body == "" {
+		return fmt.Sprintf("%s failed: %s", request, e.Status)
+	}
+	return fmt.Sprintf("%s failed: %s: %s", request, e.Status, e.Body)
+}
+
+func isKeycloakStatus(err error, statusCodes ...int) bool {
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	for _, statusCode := range statusCodes {
+		if statusErr.StatusCode == statusCode {
+			return true
+		}
+	}
+	return false
 }
 
 type tokenResponse struct {
@@ -422,9 +822,10 @@ type tokenResponse struct {
 }
 
 type groupResponse struct {
-	ID         string              `json:"id"`
-	Path       string              `json:"path"`
-	Name       string              `json:"name"`
-	Attributes map[string][]string `json:"attributes,omitempty"`
-	SubGroups  []groupResponse     `json:"subGroups,omitempty"`
+	ID            string              `json:"id"`
+	Path          string              `json:"path"`
+	Name          string              `json:"name"`
+	Attributes    map[string][]string `json:"attributes,omitempty"`
+	SubGroupCount int                 `json:"subGroupCount,omitempty"`
+	SubGroups     []groupResponse     `json:"subGroups,omitempty"`
 }
