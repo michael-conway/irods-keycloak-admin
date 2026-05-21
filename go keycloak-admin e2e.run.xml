@@ -1,0 +1,17 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="go keycloak-admin e2e" type="GoTestRunConfiguration" factoryName="Go Test">
+    <module name="irods-keycloak-admin" />
+    <working_directory value="$PROJECT_DIR$/../irods-keycloak-admin/e2e" />
+    <useCustomBuildTags value="true" />
+    <envs>
+      <env name="IRODS_KC_E2E_ENABLED" value="1" />
+    </envs>
+    <root_directory value="$PROJECT_DIR$/../irods-keycloak-admin" />
+    <kind value="DIRECTORY" />
+    <package value="github.com/michael-conway/irods-keycloak-admin/e2e" />
+    <directory value="$PROJECT_DIR$/../irods-keycloak-admin/e2e" />
+    <filePath value="$PROJECT_DIR$" />
+    <framework value="gotest" />
+    <method v="2" />
+  </configuration>
+</component>

@@ -164,6 +164,13 @@ Expected behavior:
 - Produces a plan showing missing, stale, or divergent Keycloak mirror groups.
 - Does not mutate either system.
 
+Current implementation notes:
+
+- The CLI uses direct `go-irodsclient` through `internal/irodsadapter`.
+- The CLI reads Keycloak mirror state through Keycloak Admin REST.
+- Explicit/e2e iRODS connection environment variables are supported for
+  disposable stacks; otherwise the iCommands environment is used.
+
 Deferred until the plan output is solid:
 
 - `sync apply`.

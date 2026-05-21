@@ -42,3 +42,22 @@ go test ./e2e
 Tests should call `RequireConfig(t)` before touching live services. Unit tests
 in this directory may call `LoadConfig()` directly and must not require live
 containers.
+
+Some live fixture setup uses `docker exec` against the iRODS provider container
+to run the same `iadmin` operations used by the disposable stack setup scripts.
+Override `IRODS_KC_E2E_IRODS_PROVIDER_CONTAINER` when the compose project or
+provider service name differs from the defaults.
+
+The e2e env files also provide Keycloak Admin REST credentials for dry-run
+tests:
+
+```bash
+IRODS_KC_E2E_KEYCLOAK_BASE_URL=https://127.0.0.1:8443
+IRODS_KC_E2E_KEYCLOAK_REALM=irods
+IRODS_KC_E2E_KEYCLOAK_ADMIN_USER=admin
+IRODS_KC_E2E_KEYCLOAK_ADMIN_PASSWORD=admin
+IRODS_KC_E2E_KEYCLOAK_INSECURE_SKIP_VERIFY=true
+```
+
+These map to the same command-line flags used by `irods-kc-sync
+repair-keycloak --dry-run`.

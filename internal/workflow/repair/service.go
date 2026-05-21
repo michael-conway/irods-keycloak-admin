@@ -45,6 +45,7 @@ type irodsGroupSnapshot struct {
 }
 
 type keycloakGroupSnapshot struct {
+	ID      string
 	Name    string
 	Path    string
 	Zone    string
@@ -153,11 +154,16 @@ func (s *Service) readKeycloakSnapshot(ctx context.Context, realm string, zone s
 		if groupPath == "" {
 			groupPath = keycloakMirrorPath(groupName)
 		}
-		members, err := s.Keycloak.ListGroupMembers(ctx, realm, groupPath)
+		groupID := strings.TrimSpace(group.ID)
+		if groupID == "" {
+			groupID = groupPath
+		}
+		members, err := s.Keycloak.ListGroupMembers(ctx, realm, groupID)
 		if err != nil {
 			return nil, err
 		}
 		snapshot[groupName] = keycloakGroupSnapshot{
+			ID:      groupID,
 			Name:    groupName,
 			Path:    groupPath,
 			Zone:    groupZone,

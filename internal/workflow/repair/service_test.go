@@ -104,10 +104,10 @@ func TestRepairKeycloakPlansMembershipDriftAndStaleMirror(t *testing.T) {
 			},
 		},
 		members: map[string][]keycloakadmin.User{
-			"/irods/project-alpha": {
+			"kc-project-alpha": {
 				{ID: "kc-bob", Username: "bob"},
 			},
-			"/irods/stale-team": {
+			"kc-stale": {
 				{ID: "kc-carol", Username: "carol"},
 			},
 		},
@@ -143,7 +143,7 @@ func TestRepairKeycloakPlansMembershipDriftAndStaleMirror(t *testing.T) {
 		"/irods/project-alpha#member:bob",
 		"/irods/stale-team",
 	})
-	if keycloak.listMembersCalls["/unmanaged"] != 0 {
+	if keycloak.listMembersCalls["unmanaged"] != 0 {
 		t.Fatal("unmanaged Keycloak groups should be ignored")
 	}
 }
@@ -247,12 +247,12 @@ func (f *fakeKeycloakClient) ListGroups(context.Context, string) ([]keycloakadmi
 	return append([]keycloakadmin.Group(nil), f.groups...), nil
 }
 
-func (f *fakeKeycloakClient) ListGroupMembers(_ context.Context, _ string, groupPath string) ([]keycloakadmin.User, error) {
+func (f *fakeKeycloakClient) ListGroupMembers(_ context.Context, _ string, groupID string) ([]keycloakadmin.User, error) {
 	if f.listMembersCalls == nil {
 		f.listMembersCalls = map[string]int{}
 	}
-	f.listMembersCalls[groupPath]++
-	return append([]keycloakadmin.User(nil), f.members[groupPath]...), nil
+	f.listMembersCalls[groupID]++
+	return append([]keycloakadmin.User(nil), f.members[groupID]...), nil
 }
 
 func (f *fakeKeycloakClient) CreateOrUpdateUser(context.Context, string, keycloakadmin.User) (*keycloakadmin.User, error) {
