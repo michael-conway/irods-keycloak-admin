@@ -9,7 +9,6 @@ import (
 func NewNotImplementedServices() Services {
 	stub := NotImplementedService{}
 	return Services{
-		Group:        stub,
 		User:         stub,
 		Provisioning: stub,
 		Sync:         stub,
@@ -21,22 +20,6 @@ func NewNotImplementedServices() Services {
 }
 
 type NotImplementedService struct{}
-
-func (NotImplementedService) CreateGroup(context.Context, domain.CreateGroupRequest) (domain.MutationResult, error) {
-	return domain.MutationResult{}, ErrNotImplemented
-}
-
-func (NotImplementedService) DeleteGroup(context.Context, domain.DeleteGroupRequest) (domain.MutationResult, error) {
-	return domain.MutationResult{}, ErrNotImplemented
-}
-
-func (NotImplementedService) AddMember(context.Context, domain.GroupMemberRequest) (domain.MutationResult, error) {
-	return domain.MutationResult{}, ErrNotImplemented
-}
-
-func (NotImplementedService) RemoveMember(context.Context, domain.GroupMemberRequest) (domain.MutationResult, error) {
-	return domain.MutationResult{}, ErrNotImplemented
-}
 
 func (NotImplementedService) ProvisionUser(context.Context, domain.ProvisionUserRequest) (domain.MutationResult, error) {
 	return domain.MutationResult{}, ErrNotImplemented
@@ -78,8 +61,8 @@ func (NotImplementedService) BootstrapKeycloak(context.Context, domain.Bootstrap
 	return domain.ApplyResult{}, ErrNotImplemented
 }
 
-func (NotImplementedService) RepairKeycloak(context.Context, domain.RepairRequest) (domain.ApplyResult, error) {
-	return domain.ApplyResult{}, ErrNotImplemented
+func (NotImplementedService) RepairKeycloak(context.Context, domain.RepairRequest) (domain.SyncPlan, error) {
+	return domain.SyncPlan{}, ErrNotImplemented
 }
 
 func (NotImplementedService) IngestKeycloakEvent(context.Context, domain.KeycloakEventRequest) (domain.EventResult, error) {

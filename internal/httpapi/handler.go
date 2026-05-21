@@ -31,11 +31,6 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/v1/status", h.getStatus)
 	mux.HandleFunc("GET /admin/v1/config/summary", h.getConfigSummary)
 
-	mux.HandleFunc("POST /admin/v1/irods/groups", h.postGroup)
-	mux.HandleFunc("DELETE /admin/v1/irods/groups/{group_name}", h.deleteGroup)
-	mux.HandleFunc("POST /admin/v1/irods/groups/{group_name}/members/{user_name}", h.postGroupMember)
-	mux.HandleFunc("DELETE /admin/v1/irods/groups/{group_name}/members/{user_name}", h.deleteGroupMember)
-
 	mux.HandleFunc("POST /admin/v1/provisioning/users/{keycloak_user_id}/plan", h.postProvisionUserPlan)
 	mux.HandleFunc("POST /admin/v1/provisioning/users/{keycloak_user_id}/apply", h.postProvisionUserApply)
 	mux.HandleFunc("POST /admin/v1/provisioning/requests", h.postProvisioningRequest)
@@ -71,68 +66,6 @@ func (h *Handler) getConfigSummary(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, h.cfg.Summary())
 }
 
-func (h *Handler) postGroup(w http.ResponseWriter, r *http.Request) {
-	var req domain.CreateGroupRequest
-	if !decodeRequest(w, r, &req) {
-		return
-	}
-	req.GroupName = strings.TrimSpace(req.GroupName)
-	if req.GroupName == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "group_name is required")
-		return
-	}
-	result, err := h.services.Group.CreateGroup(r.Context(), req)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, result)
-}
-
-func (h *Handler) deleteGroup(w http.ResponseWriter, r *http.Request) {
-	var req domain.DeleteGroupRequest
-	if !decodeRequest(w, r, &req) {
-		return
-	}
-	req.GroupName = strings.TrimSpace(r.PathValue("group_name"))
-	result, err := h.services.Group.DeleteGroup(r.Context(), req)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, result)
-}
-
-func (h *Handler) postGroupMember(w http.ResponseWriter, r *http.Request) {
-	var req domain.GroupMemberRequest
-	if !decodeRequest(w, r, &req) {
-		return
-	}
-	req.GroupName = strings.TrimSpace(r.PathValue("group_name"))
-	req.UserName = strings.TrimSpace(r.PathValue("user_name"))
-	result, err := h.services.Group.AddMember(r.Context(), req)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, result)
-}
-
-func (h *Handler) deleteGroupMember(w http.ResponseWriter, r *http.Request) {
-	var req domain.GroupMemberRequest
-	if !decodeRequest(w, r, &req) {
-		return
-	}
-	req.GroupName = strings.TrimSpace(r.PathValue("group_name"))
-	req.UserName = strings.TrimSpace(r.PathValue("user_name"))
-	result, err := h.services.Group.RemoveMember(r.Context(), req)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, result)
-}
-
 func (h *Handler) postProvisionUserPlan(w http.ResponseWriter, r *http.Request) {
 	var req domain.ProvisionUserRequest
 	if !decodeRequest(w, r, &req) {
@@ -158,7 +91,7 @@ func (h *Handler) postProvisionUserApply(w http.ResponseWriter, r *http.Request)
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, result)
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) postProvisioningRequest(w http.ResponseWriter, r *http.Request) {

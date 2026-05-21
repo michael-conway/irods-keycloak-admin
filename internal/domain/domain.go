@@ -16,22 +16,6 @@ type RequestMetadata struct {
 	DryRun bool   `json:"dry_run,omitempty"`
 }
 
-type CreateGroupRequest struct {
-	RequestMetadata
-	GroupName string `json:"group_name"`
-}
-
-type DeleteGroupRequest struct {
-	RequestMetadata
-	GroupName string `json:"group_name"`
-}
-
-type GroupMemberRequest struct {
-	RequestMetadata
-	GroupName string `json:"group_name"`
-	UserName  string `json:"user_name"`
-}
-
 type ProvisionUserRequest struct {
 	RequestMetadata
 	KeycloakUserID string            `json:"keycloak_user_id"`

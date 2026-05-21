@@ -1,7 +1,7 @@
 {
   "admin_password": "rods",
   "default_resource_directory": "/var/lib/irods/Vault",
-  "default_resource_name": "demoResc",
+  "default_resource_name": "providerResc",
   "host_system_information": {
     "service_account_user_name": "irods",
     "service_account_group_name": "irods"
@@ -12,7 +12,7 @@
     "irods_cwd": "/tempZone/home/rods",
     "irods_default_hash_scheme": "SHA256",
     "irods_default_number_of_transfer_threads": 4,
-    "irods_default_resource": "demoResc",
+    "irods_default_resource": "providerResc",
     "irods_encryption_algorithm": "AES-256-CBC",
     "irods_encryption_key_size": 32,
     "irods_encryption_num_hash_rounds": 16,
@@ -67,7 +67,7 @@
     "default_dir_mode": "0750",
     "default_file_mode": "0600",
     "default_hash_scheme": "SHA256",
-    "default_resource_name": "demoResc",
+    "default_resource_name": "providerResc",
     "encryption": {
       "algorithm": "AES-256-CBC",
       "key_size": 32,

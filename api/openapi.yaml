@@ -2,69 +2,62 @@ openapi: 3.1.0
 info:
   title: iRODS Keycloak Admin Control Plane
   version: 0.1.0-dev
+  description: |
+    Private orchestration API for iRODS and Keycloak identity workflows.
+
+    This API owns Keycloak mirror synchronization, repair, bootstrap,
+    provisioning decisions, Keycloak event ingestion, and diagnostics. It is not
+    a generic iRODS REST API. Generic iRODS user, group, path, ticket, resource,
+    and metadata operations belong in irods-go-rest core APIs.
 servers:
   - url: http://localhost:8081
+tags:
+  - name: status
+    description: Service health and non-secret runtime information.
+  - name: sync
+    description: Control-plane planning and apply workflows spanning iRODS and Keycloak.
+  - name: repair
+    description: Plan-only repair workflows that make Keycloak mirror state match iRODS authority.
+  - name: provisioning
+    description: Keycloak-facing provisioning request and approval workflows.
+  - name: events
+    description: Keycloak service callbacks and event ingestion.
+  - name: diagnostics
+    description: Configuration, mapping, and drift checks.
 paths:
   /healthz:
     get:
+      tags: [status]
       operationId: getHealth
+      summary: Check service health
       responses:
         "200":
           description: service health
   /admin/v1/status:
     get:
+      tags: [status]
       operationId: getStatus
+      summary: Get service status
       responses:
         "200":
           description: service status
   /admin/v1/config/summary:
     get:
+      tags: [status]
       operationId: getConfigSummary
+      summary: Get non-secret configuration summary
       responses:
         "200":
           description: non-secret configuration summary
-  /admin/v1/irods/groups:
-    post:
-      operationId: createIRODSGroupIntent
-      responses:
-        "202":
-          description: group mutation accepted
-        "501":
-          description: endpoint scaffolded but not implemented
-  /admin/v1/irods/groups/{group_name}:
-    delete:
-      operationId: deleteIRODSGroupIntent
-      parameters:
-        - $ref: "#/components/parameters/GroupName"
-      responses:
-        "202":
-          description: group mutation accepted
-        "501":
-          description: endpoint scaffolded but not implemented
-  /admin/v1/irods/groups/{group_name}/members/{user_name}:
-    post:
-      operationId: addIRODSGroupMemberIntent
-      parameters:
-        - $ref: "#/components/parameters/GroupName"
-        - $ref: "#/components/parameters/UserName"
-      responses:
-        "202":
-          description: membership mutation accepted
-        "501":
-          description: endpoint scaffolded but not implemented
-    delete:
-      operationId: removeIRODSGroupMemberIntent
-      parameters:
-        - $ref: "#/components/parameters/GroupName"
-        - $ref: "#/components/parameters/UserName"
-      responses:
-        "202":
-          description: membership mutation accepted
-        "501":
-          description: endpoint scaffolded but not implemented
   /admin/v1/sync/plan:
     post:
+      tags: [sync]
       operationId: planSync
+      summary: Plan a synchronization workflow
+      description: |
+        Produces a control-plane plan for synchronization work. This route is
+        not a generic iRODS user or group endpoint; generic iRODS HTTP resources
+        are exposed by irods-go-rest.
       responses:
         "200":
           description: sync plan
@@ -72,7 +65,12 @@ paths:
           description: endpoint scaffolded but not implemented
   /admin/v1/sync/apply:
     post:
+      tags: [sync]
       operationId: applySync
+      summary: Apply an approved synchronization plan
+      description: |
+        Applies an explicit sync plan or plan reference. Apply operations are
+        orchestration workflows and must not be used as generic iRODS CRUD.
       responses:
         "202":
           description: sync apply accepted
@@ -80,7 +78,12 @@ paths:
           description: endpoint scaffolded but not implemented
   /admin/v1/bootstrap/keycloak:
     post:
+      tags: [sync]
       operationId: bootstrapKeycloak
+      summary: Bootstrap Keycloak mirror state from iRODS
+      description: |
+        Initializes Keycloak mirror state from authoritative iRODS users,
+        groups, and memberships.
       responses:
         "202":
           description: bootstrap accepted
@@ -88,15 +91,26 @@ paths:
           description: endpoint scaffolded but not implemented
   /admin/v1/repair/keycloak:
     post:
+      tags: [repair]
       operationId: repairKeycloak
+      summary: Plan Keycloak mirror repair from iRODS authority
+      description: |
+        Reads authoritative iRODS state through the direct adapter and reads
+        Keycloak mirror state through Keycloak Admin REST. Returns a repair plan
+        only and does not mutate either system.
       responses:
-        "202":
-          description: repair accepted
+        "200":
+          description: repair plan
         "501":
           description: endpoint scaffolded but not implemented
   /admin/v1/keycloak/events:
     post:
+      tags: [events]
       operationId: ingestKeycloakEvent
+      summary: Ingest a Keycloak event
+      description: |
+        Private callback endpoint for Keycloak-originated events. Event handling
+        may emit control-plane work but does not replace generic iRODS REST APIs.
       responses:
         "202":
           description: event accepted
@@ -104,7 +118,9 @@ paths:
           description: endpoint scaffolded but not implemented
   /admin/v1/provisioning/users/{keycloak_user_id}/plan:
     post:
+      tags: [provisioning]
       operationId: planProvisionUser
+      summary: Plan provisioning for one Keycloak user
       parameters:
         - $ref: "#/components/parameters/KeycloakUserID"
       responses:
@@ -114,7 +130,9 @@ paths:
           description: endpoint scaffolded but not implemented
   /admin/v1/provisioning/users/{keycloak_user_id}/apply:
     post:
+      tags: [provisioning]
       operationId: applyProvisionUser
+      summary: Apply provisioning for one Keycloak user
       parameters:
         - $ref: "#/components/parameters/KeycloakUserID"
       responses:
@@ -124,7 +142,9 @@ paths:
           description: endpoint scaffolded but not implemented
   /admin/v1/provisioning/requests:
     post:
+      tags: [provisioning]
       operationId: createProvisioningRequest
+      summary: Create a provisioning request
       responses:
         "202":
           description: provisioning request accepted
@@ -132,7 +152,9 @@ paths:
           description: endpoint scaffolded but not implemented
   /admin/v1/provisioning/requests/{request_id}/approve:
     post:
+      tags: [provisioning]
       operationId: approveProvisioningRequest
+      summary: Approve a provisioning request
       parameters:
         - $ref: "#/components/parameters/RequestID"
       responses:
@@ -142,7 +164,9 @@ paths:
           description: endpoint scaffolded but not implemented
   /admin/v1/provisioning/requests/{request_id}/reject:
     post:
+      tags: [provisioning]
       operationId: rejectProvisioningRequest
+      summary: Reject a provisioning request
       parameters:
         - $ref: "#/components/parameters/RequestID"
       responses:
@@ -152,7 +176,9 @@ paths:
           description: endpoint scaffolded but not implemented
   /admin/v1/diagnostics/check-config:
     post:
+      tags: [diagnostics]
       operationId: checkConfig
+      summary: Check runtime configuration
       responses:
         "200":
           description: configuration diagnostic result
@@ -160,7 +186,9 @@ paths:
           description: endpoint scaffolded but not implemented
   /admin/v1/diagnostics/check-mapping:
     post:
+      tags: [diagnostics]
       operationId: checkMapping
+      summary: Check identity mapping policy
       responses:
         "200":
           description: mapping diagnostic result
@@ -168,7 +196,9 @@ paths:
           description: endpoint scaffolded but not implemented
   /admin/v1/diagnostics/check-drift:
     post:
+      tags: [diagnostics]
       operationId: checkDrift
+      summary: Check iRODS and Keycloak mirror drift
       responses:
         "200":
           description: drift diagnostic result
@@ -176,18 +206,6 @@ paths:
           description: endpoint scaffolded but not implemented
 components:
   parameters:
-    GroupName:
-      name: group_name
-      in: path
-      required: true
-      schema:
-        type: string
-    UserName:
-      name: user_name
-      in: path
-      required: true
-      schema:
-        type: string
     KeycloakUserID:
       name: keycloak_user_id
       in: path

@@ -10,7 +10,6 @@ import (
 var ErrNotImplemented = errors.New("not implemented")
 
 type Services struct {
-	Group        GroupWorkflowService
 	User         UserWorkflowService
 	Provisioning ProvisioningService
 	Sync         SyncService
@@ -18,13 +17,6 @@ type Services struct {
 	Repair       RepairService
 	Event        EventService
 	Diagnostics  DiagnosticsService
-}
-
-type GroupWorkflowService interface {
-	CreateGroup(ctx context.Context, req domain.CreateGroupRequest) (domain.MutationResult, error)
-	DeleteGroup(ctx context.Context, req domain.DeleteGroupRequest) (domain.MutationResult, error)
-	AddMember(ctx context.Context, req domain.GroupMemberRequest) (domain.MutationResult, error)
-	RemoveMember(ctx context.Context, req domain.GroupMemberRequest) (domain.MutationResult, error)
 }
 
 type UserWorkflowService interface {
@@ -50,7 +42,7 @@ type BootstrapService interface {
 }
 
 type RepairService interface {
-	RepairKeycloak(ctx context.Context, req domain.RepairRequest) (domain.ApplyResult, error)
+	RepairKeycloak(ctx context.Context, req domain.RepairRequest) (domain.SyncPlan, error)
 }
 
 type EventService interface {

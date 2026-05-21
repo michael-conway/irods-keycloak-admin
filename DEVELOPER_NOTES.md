@@ -31,8 +31,8 @@ Goal:
 
 ```text
 Build the first vertical slice with irods-keycloak-admin planning and
-orchestrating, irods-go-rest performing generic iRODS REST operations, and
-Keycloak Admin REST updating mirror state.
+orchestrating, direct usersync/go-irodsclient calls handling local CLI iRODS
+work, and Keycloak Admin REST updating mirror state.
 ```
 
 Important boundary decision:
@@ -40,6 +40,7 @@ Important boundary decision:
 ```text
 Generic iRODS group/user HTTP routes belong in irods-go-rest.
 irods-keycloak-admin should not grow a second generic iRODS REST API.
+Local irods-kc-* CLIs should not call irods-go-rest for iRODS sync work.
 ```
 
 #### irods-go-rest Tasks
@@ -50,7 +51,7 @@ x1. Review existing `/api/v1/usergroup` behavior.
 - Check current authorization rules, error mapping, idempotency, and audit/log
   fields.
 
-2. Harden usergroup endpoints for service callers.
+x2. Harden usergroup endpoints for service callers.
 
 - Clarify the service-account authorization path:
   - no separate REST-side sync ACL or state store
@@ -89,12 +90,14 @@ Managed sync AVUs use the `iRODS:USER_SYNCH:<field>` family:
 - `iRODS:USER_SYNCH:LAST_SYNC_AT`
 - `iRODS:USER_SYNCH:LAST_PLAN_ID`
 
-3. Update OpenAPI and documentation.
+x3. Update OpenAPI and documentation.
 
-- Document `/api/v1/usergroup` as the generic REST surface for iRODS groups.
-- Document that Keycloak workflows should call these routes, not `/api/v1/ext`.
+- Document `/api/v1/usergroup` as the generic REST surface for iRODS group
+  create/delete and membership management.
+- Document that Keycloak workflows should call these generic routes, not
+  `/api/v1/ext`.
 
-4. Add focused tests.
+x4. Add focused tests.
 
 - Handler/service tests for idempotency and permission failures.
 - Negative tests for missing group/user parameters.
@@ -102,37 +105,51 @@ Managed sync AVUs use the `iRODS:USER_SYNCH:<field>` family:
 
 #### irods-keycloak-admin Tasks
 
-1. Remove generic group mutation routes from the admin API scaffold.
+x1. Remove generic group mutation routes from the admin API scaffold.
 
 - Drop `/admin/v1/irods/groups*`.
 - Keep control-plane routes only: sync, repair, bootstrap, provisioning, events,
   and diagnostics.
 
-2. Add an `irodsrest` client package.
+x2. Pivot command-line sync workflows to direct `usersync` library calls.
 
-- Wrap `irods-go-rest` generic group endpoints:
-  - `POST /api/v1/usergroup`
-  - `DELETE /api/v1/usergroup/{group_name}`
-  - `POST /api/v1/usergroup/{group_name}/member`
-  - `DELETE /api/v1/usergroup/{group_name}/member/{user_name}`
-- Include base URL, bearer/basic auth config, and request ID propagation.
+- Do not route `irods-kc-sync` or other local command-line clients through
+  `irods-go-rest`.
+- Use `go-irodsclient-extensions/usersync` for shared reconciliation behavior.
+- Use the same iCommands-compatible initialization/environment model as
+  `gocmd` and `drscmd` for direct iRODS connections.
+- Reserve the Keycloak admin API for Keycloak integration, service callbacks,
+  and remote control-plane workflows.
+- Do not add an `irodsrest` client package unless a separate remote REST client
+  use case appears.
 
-3. Clarify the direct iRODS adapter role.
+x3. Clarify the direct iRODS adapter role.
 
-- Keep `irodsadapter` only for direct `go-irodsclient` fallback or sync reads.
-- Decide whether sync reads should call `irods-go-rest` or use direct
-  `go-irodsclient` for backend efficiency.
+- Keep `irodsadapter` as the direct iRODS boundary over `go-irodsclient` and
+  `go-irodsclient-extensions/usersync`.
+- Keep generic `irods-go-rest` calls out of local CLI execution paths.
+- Higher layers should depend on `irodsadapter` interfaces rather than using
+  `go-irodsclient`, `usersync`, or REST clients directly.
+- Reuse `go-irodsclient` domain types and `usersync` policy/helpers; do not
+  redefine iRODS users, groups, AVUs, or sync guardrails locally.
 
-4. Start with `repair-keycloak` planning.
+x4. Start with `repair-keycloak` planning.
 
-- Read authoritative iRODS groups through `irods-go-rest` or `irodsadapter`.
+- Read authoritative iRODS groups through `irodsadapter` and shared
+  `usersync`/`go-irodsclient` structures.
 - Read Keycloak mirror groups through Keycloak Admin REST.
 - Emit a plan only; do not apply mutations yet.
 
-5. Update strategy/API stubs as the boundary is implemented.
+x5. Update strategy/API stubs as the boundary is implemented.
 
 - `irods-go-rest` is the generic iRODS REST API.
 - `irods-keycloak-admin` is the orchestration/control-plane API.
+- `/admin/v1` exposes Keycloak mirror, sync, repair, bootstrap, provisioning,
+  event, and diagnostics workflows only.
+- Generic iRODS user/group/path/resource/ticket HTTP operations remain in
+  `irods-go-rest` core APIs, not this service and not `/api/v1/ext`.
+- Local `irods-kc-*` CLI workflows use `irodsadapter` and shared
+  `go-irodsclient-extensions/usersync` code rather than routing through REST.
 
 #### First Vertical Slice
 
@@ -1237,8 +1254,8 @@ Do not mix languages in a repository. Isolate by purpose and lifecycle.
 
 Language: Go
 
-Purpose: main external toolkit: admin API, sync, repair, Keycloak-facing
-user/group management, and operational sync CLI.
+Purpose: Keycloak-facing control-plane toolkit for admin API, sync, repair,
+provisioning, mirror management, diagnostics, and operational sync CLI.
 
 This is the main repo.
 
@@ -1250,6 +1267,7 @@ Use go-irodsclient for iRODS operations.
 Use Keycloak Admin REST for Keycloak mirror operations.
 Do not become a generic iRODS REST API.
 Do not become a generic Keycloak administration CLI.
+Do not expose generic iRODS user/group CRUD under `/admin/v1`.
 ```
 
 Suggested implementation layout:
@@ -1269,7 +1287,7 @@ irods-keycloak-admin/
     service/
     domain/
 
-    irodsadapter/          # wraps go-irodsclient; does not redefine iRODS models
+    irodsadapter/          # direct go-irodsclient/usersync boundary; no REST calls
     keycloakadmin/         # Keycloak Admin REST client
     mapper/                # Keycloak identity/group <-> iRODS mapping policy
     reconcile/             # snapshot comparison and drift detection
@@ -1312,12 +1330,11 @@ Package responsibilities:
 | `internal/httpapi` | Versioned `/admin/v1` routing, JSON DTOs, request validation, response/error mapping. |
 | `internal/service` | Application service interfaces used by HTTP handlers and CLIs. |
 | `internal/domain` | Local control-plane models only: plans, operation records, mirror state summaries, audit records. Do not duplicate iRODS domain structs. |
-| `internal/irodsadapter` | Thin wrapper over `go-irodsclient/fs.FileSystem` and `go-irodsclient/irods/types`. Owns connection setup and converts errors into local service errors. |
+| `internal/irodsadapter` | Direct iRODS boundary over `go-irodsclient` and `go-irodsclient-extensions/usersync`. Owns connection setup, uses shared iCommands/gocmd environment state, reuses upstream iRODS domain types, and converts direct-library errors into local service errors. It must not call `irods-go-rest`. |
 | `internal/keycloakadmin` | Keycloak Admin REST client for users, groups, attributes, realm/client metadata, and service-account checks. |
 | `internal/mapper` | Deterministic mapping from Keycloak realm/user/group claims to iRODS username, zone, and group name. Detects collisions. |
 | `internal/reconcile` | Reads iRODS and Keycloak snapshots, compares state, and emits desired operations. |
 | `internal/plan` | Defines sync plan schema, operation ordering, dependency rules, risk classes, and approval markers. |
-| `internal/workflow/group` | iRODS-first group creation/deletion and membership mutation workflows. |
 | `internal/workflow/user` | iRODS user provisioning, deprovisioning, type/password operations when policy permits. |
 | `internal/workflow/provisioning` | Self-service/request/approval flows backed by Keycloak attributes and reflected iRODS AVUs. |
 | `internal/workflow/bootstrap` | Initial Keycloak mirror creation from iRODS users/groups/memberships. |
@@ -1336,13 +1353,6 @@ implementation itself.
 Core services:
 
 ```go
-type GroupWorkflowService interface {
-    CreateGroup(ctx context.Context, req CreateGroupRequest) (MutationResult, error)
-    DeleteGroup(ctx context.Context, req DeleteGroupRequest) (MutationResult, error)
-    AddMember(ctx context.Context, req GroupMemberRequest) (MutationResult, error)
-    RemoveMember(ctx context.Context, req GroupMemberRequest) (MutationResult, error)
-}
-
 type UserWorkflowService interface {
     ProvisionUser(ctx context.Context, req ProvisionUserRequest) (MutationResult, error)
     DeprovisionUser(ctx context.Context, req DeprovisionUserRequest) (MutationResult, error)
@@ -1358,7 +1368,7 @@ type BootstrapService interface {
 }
 
 type RepairService interface {
-    RepairKeycloak(ctx context.Context, req RepairRequest) (ApplyResult, error)
+    RepairKeycloak(ctx context.Context, req RepairRequest) (SyncPlan, error)
 }
 
 type EventService interface {
@@ -1373,8 +1383,8 @@ Service rules:
 - iRODS mutations happen before Keycloak mirror updates.
 - Keycloak mirror update failure after iRODS success must be reported as a
   repairable partial result, not hidden.
-- Group/user mutation endpoints must be idempotent where iRODS semantics allow
-  it.
+- Sync/apply and provisioning operations must be idempotent where iRODS and
+  Keycloak semantics allow it.
 - Apply operations must refuse plans generated for a different config,
   authority mode, realm, zone, or mapping policy hash.
 
@@ -1384,11 +1394,6 @@ Admin API shape:
 GET    /healthz
 GET    /admin/v1/status
 GET    /admin/v1/config/summary
-
-POST   /admin/v1/irods/groups
-DELETE /admin/v1/irods/groups/{group_name}
-POST   /admin/v1/irods/groups/{group_name}/members/{user_name}
-DELETE /admin/v1/irods/groups/{group_name}/members/{user_name}
 
 POST   /admin/v1/provisioning/users/{keycloak_user_id}/plan
 POST   /admin/v1/provisioning/users/{keycloak_user_id}/apply
@@ -1407,10 +1412,18 @@ POST   /admin/v1/diagnostics/check-mapping
 POST   /admin/v1/diagnostics/check-drift
 ```
 
-The group endpoints above are control-plane intent endpoints for Keycloak SPI
-providers and admin portals. Generic listing and direct CRUD for iRODS users and
-groups should remain available through `irods-go-rest` core routes such as
-`/api/v1/user` and `/api/v1/usergroup` when a generic REST client needs them.
+Generic listing and direct CRUD for iRODS users and groups should remain
+available through `irods-go-rest` core routes such as `/api/v1/user` and
+`/api/v1/usergroup`. Do not add parallel `/admin/v1/irods/groups*` routes in
+this service; Keycloak-facing control-plane behavior belongs in sync, repair,
+bootstrap, provisioning, event, or diagnostics endpoints.
+
+Command-line sync and repair workflows should use direct
+`go-irodsclient-extensions/usersync` calls through `irodsadapter`, not
+`irods-go-rest`. This keeps the CLI path aligned with `gocmd`/`drscmd`
+initialization and avoids duplicating REST auth, error mapping, and local server
+requirements. The admin API remains the Keycloak-facing integration boundary
+for service callbacks and remote control-plane workflows.
 
 Admin API conventions:
 
@@ -1697,21 +1710,28 @@ Repo: `irods-keycloak-admin`
 
 Deliver:
 
-1. Keycloak-facing Go admin service/API for iRODS-first user and group
-   operations:
+1. Keycloak-facing Go admin service/API for control-plane workflows:
 
 ```http
-POST   /admin/v1/irods/groups
-DELETE /admin/v1/irods/groups/{group_name}
-POST   /admin/v1/irods/groups/{group_name}/members/{user_name}
-DELETE /admin/v1/irods/groups/{group_name}/members/{user_name}
+POST   /admin/v1/sync/plan
+POST   /admin/v1/sync/apply
+POST   /admin/v1/bootstrap/keycloak
+POST   /admin/v1/repair/keycloak
+POST   /admin/v1/provisioning/requests
+POST   /admin/v1/keycloak/events
+POST   /admin/v1/diagnostics/check-config
+POST   /admin/v1/diagnostics/check-mapping
+POST   /admin/v1/diagnostics/check-drift
 ```
 
-These endpoints are Keycloak-facing control-plane contracts. Before adding any
-similar endpoint, check whether the operation is generic enough for
-`irods-go-rest` core routes such as `/api/v1/user` or `/api/v1/usergroup`. If
-it is generic, prefer the `irods-go-rest` contract. If it includes Keycloak
-mirror, approval, sync, or repair semantics, keep it in `irods-keycloak-admin`.
+Do not add generic iRODS group mutation routes such as
+`/admin/v1/irods/groups*` to this service. Operator-facing direct iRODS
+administration belongs in `gocmd`/iCommands, while local sync CLIs should call
+`internal/irodsadapter`, which owns direct use of `go-irodsclient-extensions/usersync`
+and the shared iCommands-compatible environment. If an operation includes
+Keycloak mirror, approval, sync, repair, bootstrap, event, or diagnostics
+semantics and must be invoked by Keycloak or another service, keep that API in
+`irods-keycloak-admin`.
 
 2. Sync/repair command-line workflows:
 

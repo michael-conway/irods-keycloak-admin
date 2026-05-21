@@ -1,13 +1,17 @@
-name: irods-keycloak-admin-test
+name: ${COMPOSE_PROJECT_NAME:-irods-keycloak-admin-e2e}
 
 services:
   postgres:
-    image: postgres:15
+    image: ${POSTGRES_IMAGE:-postgres:15}
     platform: linux/amd64
     restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: irods
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-irods}
+      IRODS_DB_NAME: ${IRODS_DB_NAME:-ICAT}
+      IRODS_DB_USER: ${IRODS_DB_USER:-irods}
+      IRODS_DB_PASSWORD: ${IRODS_DB_PASSWORD:-testpassword}
+      KEYCLOAK_DB_NAME: ${KEYCLOAK_DB_NAME:-KEYCLOAK}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
@@ -22,27 +26,29 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.provider
-    image: irods-provider:5.0.3-ubuntu-noble
+    image: ${IRODS_PROVIDER_IMAGE:-irods-grid-provider:5.0.3-ubuntu-noble}
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      IRODS_ZONE: tempZone
-      IRODS_ADMIN_USER: rods
-      IRODS_ADMIN_PASSWORD: rods
+      IRODS_ZONE: ${IRODS_ZONE:-tempZone}
+      IRODS_ADMIN_USER: ${IRODS_ADMIN_USER:-rods}
+      IRODS_ADMIN_PASSWORD: ${IRODS_ADMIN_PASSWORD:-rods}
       IRODS_DB_HOST: postgres
-      IRODS_DB_PORT: 5432
-      IRODS_DB_NAME: ICAT
-      IRODS_DB_USER: irods
-      IRODS_DB_PASSWORD: testpassword
+      IRODS_DB_PORT: ${IRODS_DB_PORT:-5432}
+      IRODS_DB_NAME: ${IRODS_DB_NAME:-ICAT}
+      IRODS_DB_USER: ${IRODS_DB_USER:-irods}
+      IRODS_DB_PASSWORD: ${IRODS_DB_PASSWORD:-testpassword}
+      IRODS_HOSTNAME: irods-provider
+      IRODS_PROVIDER_RESOURCE: ${IRODS_PROVIDER_RESOURCE:-providerResc}
       IRODS_VAULT_DIR: /var/lib/irods/iRODS/Vault
     volumes:
-      - irods_data:/var/lib/irods
-      - irods_etc:/etc/irods
+      - irods_provider_data:/var/lib/irods
+      - irods_provider_etc:/etc/irods
     ports:
-      - "1247:1247"
-      - "1248:1248"
-      - "20000-20199:20000-20199"  # TCP range for data connections
+      - "${IRODS_PROVIDER_HOST_PORT:-1247}:1247"
+      - "${IRODS_PROVIDER_CONTROL_PORT:-1248}:1248"
+      - "${IRODS_PROVIDER_DATA_PORT_RANGE:-20000-20199}:20000-20199"
     cap_add:
       - SYS_ADMIN
 
@@ -52,18 +58,91 @@ services:
     build:
       context: .
       dockerfile: Dockerfile-keycloak
+    image: ${KEYCLOAK_IMAGE:-irods-keycloak-admin-keycloak:local}
     env_file:
       - ${KEYCLOAK_ENV_FILE:-./keycloak.env}
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${KEYCLOAK_DB_NAME:-KEYCLOAK}
+      KC_DB_USERNAME: ${IRODS_DB_USER:-irods}
+      KC_DB_PASSWORD: ${IRODS_DB_PASSWORD:-testpassword}
+      KC_HOSTNAME: ${KEYCLOAK_HOSTNAME:-localhost}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
     depends_on:
       postgres:
         condition: service_healthy
     ports:
-      - "8443:8443"
-      - "9000:9000"
+      - "${KEYCLOAK_HTTPS_HOST_PORT:-8443}:8443"
+      - "${KEYCLOAK_MANAGEMENT_HOST_PORT:-19090}:9000"
     cap_add:
       - SYS_ADMIN
 
+  irods-go-rest-provider:
+    image: ${IRODS_GO_REST_IMAGE:-ghcr.io/michael-conway/irods-go-rest:develop}
+    profiles: ["rest"]
+    depends_on:
+      irods-provider:
+        condition: service_started
+      keycloak:
+        condition: service_started
+    environment:
+      IRODS_REST_CONFIG_FILE: /etc/irods-grid/rest-provider.yaml
+      GOREST_PUBLIC_URL: ${REST_PROVIDER_PUBLIC_URL:-http://127.0.0.1:8080}
+      GOREST_CORS_ALLOWED_ORIGINS: ${REST_CORS_ALLOWED_ORIGINS:-http://localhost:8081,http://127.0.0.1:8081,http://localhost:5173,http://127.0.0.1:5173}
+      GOREST_IRODS_HOST: irods-provider
+      GOREST_IRODS_PORT: 1247
+      GOREST_IRODS_ZONE: ${IRODS_ZONE:-tempZone}
+      GOREST_IRODS_ADMIN_USER: ${IRODS_ADMIN_USER:-rods}
+      GOREST_IRODS_ADMIN_PASSWORD: ${IRODS_ADMIN_PASSWORD:-rods}
+      GOREST_IRODS_DEFAULT_RESOURCE: ${IRODS_PROVIDER_RESOURCE:-providerResc}
+      GOREST_TEST_RESOURCE1: ${IRODS_PROVIDER_RESOURCE:-providerResc}
+      GOREST_TEST_RESOURCE2: ${IRODS_PROVIDER_RESOURCE:-providerResc}
+      GOREST_OIDC_URL: ${OIDC_INTERNAL_URL:-https://keycloak:8443}
+      GOREST_OIDC_CLIENT_ID: ${IRODS_REST_WEB_CLIENT_ID:-irods-go-rest}
+      GOREST_OIDC_CLIENT_SECRET: ${IRODS_REST_WEB_CLIENT_SECRET:-change-me}
+      GOREST_OIDC_REALM: ${OIDC_REALM:-irods}
+      GOREST_OIDC_SCOPE: ${OIDC_SCOPE:-openid profile email}
+      GOREST_OIDC_INSECURE_SKIP_VERIFY: ${OIDC_INSECURE_SKIP_VERIFY:-true}
+    volumes:
+      - ./config/irods-go-rest/provider.yaml:/etc/irods-grid/rest-provider.yaml:ro
+    ports:
+      - "${REST_PROVIDER_HOST_PORT:-8080}:8080"
+
+  irods-go-rest-resource:
+    image: ${IRODS_GO_REST_IMAGE:-ghcr.io/michael-conway/irods-go-rest:develop}
+    profiles: ["rest"]
+    depends_on:
+      irods-provider:
+        condition: service_started
+      keycloak:
+        condition: service_started
+    environment:
+      IRODS_REST_CONFIG_FILE: /etc/irods-grid/rest-resource.yaml
+      GOREST_PUBLIC_URL: ${REST_RESOURCE_PUBLIC_URL:-http://127.0.0.1:8082}
+      GOREST_CORS_ALLOWED_ORIGINS: ${REST_CORS_ALLOWED_ORIGINS:-http://localhost:8081,http://127.0.0.1:8081,http://localhost:5173,http://127.0.0.1:5173}
+      GOREST_IRODS_HOST: irods-provider
+      GOREST_IRODS_PORT: 1247
+      GOREST_IRODS_ZONE: ${IRODS_ZONE:-tempZone}
+      GOREST_IRODS_ADMIN_USER: ${IRODS_ADMIN_USER:-rods}
+      GOREST_IRODS_ADMIN_PASSWORD: ${IRODS_ADMIN_PASSWORD:-rods}
+      GOREST_IRODS_DEFAULT_RESOURCE: ${IRODS_PROVIDER_RESOURCE:-providerResc}
+      GOREST_TEST_RESOURCE1: ${IRODS_PROVIDER_RESOURCE:-providerResc}
+      GOREST_TEST_RESOURCE2: ${IRODS_PROVIDER_RESOURCE:-providerResc}
+      GOREST_OIDC_URL: ${OIDC_INTERNAL_URL:-https://keycloak:8443}
+      GOREST_OIDC_CLIENT_ID: ${IRODS_REST_WEB_CLIENT_ID:-irods-go-rest}
+      GOREST_OIDC_CLIENT_SECRET: ${IRODS_REST_WEB_CLIENT_SECRET:-change-me}
+      GOREST_OIDC_REALM: ${OIDC_REALM:-irods}
+      GOREST_OIDC_SCOPE: ${OIDC_SCOPE:-openid profile email}
+      GOREST_OIDC_INSECURE_SKIP_VERIFY: ${OIDC_INSECURE_SKIP_VERIFY:-true}
+    volumes:
+      - ./config/irods-go-rest/resource.yaml:/etc/irods-grid/rest-resource.yaml:ro
+    ports:
+      - "${REST_RESOURCE_HOST_PORT:-8082}:8080"
+
 volumes:
   pgdata:
-  irods_data:
-  irods_etc:
+  irods_provider_data:
+  irods_provider_etc:
