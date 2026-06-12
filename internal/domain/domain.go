@@ -122,15 +122,16 @@ type PlanOperation struct {
 }
 
 type SyncPlan struct {
-	PlanFormatVersion string          `json:"plan_format_version"`
-	PlanID            string          `json:"plan_id"`
-	Mode              string          `json:"mode"`
-	Authority         string          `json:"authority"`
-	Realm             string          `json:"realm"`
-	Zone              string          `json:"zone"`
-	MappingPolicyHash string          `json:"mapping_policy_hash,omitempty"`
-	Summary           PlanSummary     `json:"summary"`
-	Operations        []PlanOperation `json:"operations"`
+	PlanFormatVersion  string          `json:"plan_format_version"`
+	PlanID             string          `json:"plan_id"`
+	Mode               string          `json:"mode"`
+	Authority          string          `json:"authority"`
+	Realm              string          `json:"realm"`
+	Zone               string          `json:"zone"`
+	KeycloakMirrorRoot string          `json:"keycloak_mirror_root,omitempty"`
+	MappingPolicyHash  string          `json:"mapping_policy_hash,omitempty"`
+	Summary            PlanSummary     `json:"summary"`
+	Operations         []PlanOperation `json:"operations"`
 }
 
 type ApplyResult struct {

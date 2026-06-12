@@ -39,7 +39,7 @@ func (p mirrorPathPolicy) GroupPath(groupName string) string {
 }
 
 func (p mirrorPathPolicy) GroupNameFromPath(groupPath string) string {
-	groupPath = strings.TrimSpace(groupPath)
+	groupPath = normalizeAbsoluteMirrorPath(groupPath)
 	prefix := p.root + "/"
 	if !strings.HasPrefix(groupPath, prefix) {
 		return ""
@@ -48,6 +48,21 @@ func (p mirrorPathPolicy) GroupNameFromPath(groupPath string) string {
 }
 
 func (p mirrorPathPolicy) IsManagedPath(groupPath string) bool {
-	groupPath = strings.TrimSpace(groupPath)
-	return strings.HasPrefix(groupPath, p.root+"/")
+	groupPath = normalizeAbsoluteMirrorPath(groupPath)
+	return groupPath == p.root || strings.HasPrefix(groupPath, p.root+"/")
+}
+
+func normalizeAbsoluteMirrorPath(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	cleaned := path.Clean(value)
+	if cleaned == "." {
+		return ""
+	}
+	return cleaned
 }

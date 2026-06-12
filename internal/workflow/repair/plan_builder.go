@@ -9,6 +9,12 @@ import (
 	"github.com/michael-conway/irods-keycloak-admin/internal/domain"
 )
 
+const (
+	changeCauseMissingMirrorGroup = "missing_mirror_group"
+	changeCauseMembershipDrift    = "membership_drift"
+	changeCauseStaleKeycloakState = "stale_keycloak_state"
+)
+
 type repairPlanner struct {
 	realm          string
 	zone           string
@@ -27,14 +33,15 @@ func newRepairPlanner(realm string, zone string, mirrorPolicy mirrorPathPolicy, 
 		irodsGroups:    irodsGroups,
 		keycloakGroups: keycloakGroups,
 		plan: domain.SyncPlan{
-			PlanFormatVersion: domain.SyncPlanFormatVersion,
-			PlanID:            newPlanID(),
-			Mode:              domain.SyncPlanModeRepairKeycloak,
-			Authority:         domain.SyncPlanAuthorityIRODS,
-			Realm:             realm,
-			Zone:              zone,
-			Summary:           domain.PlanSummary{},
-			Operations:        []domain.PlanOperation{},
+			PlanFormatVersion:  domain.SyncPlanFormatVersion,
+			PlanID:             newPlanID(),
+			Mode:               domain.SyncPlanModeRepairKeycloak,
+			Authority:          domain.SyncPlanAuthorityIRODS,
+			Realm:              realm,
+			Zone:               zone,
+			KeycloakMirrorRoot: mirrorPolicy.Root(),
+			Summary:            domain.PlanSummary{},
+			Operations:         []domain.PlanOperation{},
 		},
 		operationIndex: 1,
 	}
@@ -65,7 +72,7 @@ func (p *repairPlanner) appendIRODSGroupOperations(groupName string, irodsGroup 
 		if keycloakExists && mapContains(keycloakGroup.Members, username) {
 			continue
 		}
-		p.appendMemberAdd(groupName, irodsGroup.Zone, groupPath, keycloakGroup.ID, username)
+		p.appendMemberAdd(groupName, irodsGroup, groupPath, keycloakGroup, username, keycloakExists)
 	}
 
 	if !keycloakExists {
@@ -76,7 +83,7 @@ func (p *repairPlanner) appendIRODSGroupOperations(groupName string, irodsGroup 
 		if setContains(irodsGroup.Members, username) {
 			continue
 		}
-		p.appendMemberRemove(groupName, irodsGroup.Zone, groupPath, keycloakGroup.ID, username, keycloakGroup.Members[username])
+		p.appendMemberRemove(groupName, irodsGroup, groupPath, keycloakGroup, username, keycloakGroup.Members[username])
 	}
 }
 
@@ -89,37 +96,45 @@ func (p *repairPlanner) groupPath(groupName string, keycloakGroup keycloakGroupS
 }
 
 func (p *repairPlanner) appendGroupCreate(groupName string, zone string, groupPath string) {
-	p.plan.Operations = append(p.plan.Operations, newOperation(p.nextOperationID(), domain.PlanActionKeycloakGroupCreate, groupPath, "low", map[string]any{
-		"irods_group_name": groupName,
-		"irods_zone":       zone,
-		"keycloak_realm":   p.realm,
-		"keycloak_path":    groupPath,
-	}))
-	p.plan.Summary.CreateKeycloakGroups++
-}
-
-func (p *repairPlanner) appendMemberAdd(groupName string, zone string, groupPath string, groupID string, username string) {
 	evidence := map[string]any{
+		"change_cause":     changeCauseMissingMirrorGroup,
 		"irods_group_name": groupName,
-		"irods_username":   username,
 		"irods_zone":       zone,
 		"keycloak_realm":   p.realm,
 		"keycloak_path":    groupPath,
 	}
-	addNonEmptyEvidence(evidence, "keycloak_group_id", groupID)
+	p.plan.Operations = append(p.plan.Operations, newOperation(p.nextOperationID(), domain.PlanActionKeycloakGroupCreate, groupPath, "low", evidence))
+	p.plan.Summary.CreateKeycloakGroups++
+}
+
+func (p *repairPlanner) appendMemberAdd(groupName string, irodsGroup irodsGroupSnapshot, groupPath string, keycloakGroup keycloakGroupSnapshot, username string, keycloakExists bool) {
+	changeCause := changeCauseMembershipDrift
+	if !keycloakExists {
+		changeCause = changeCauseMissingMirrorGroup
+	}
+	evidence := map[string]any{
+		"change_cause":     changeCause,
+		"irods_group_name": groupName,
+		"irods_username":   username,
+		"irods_zone":       irodsGroup.Zone,
+		"keycloak_realm":   p.realm,
+		"keycloak_path":    groupPath,
+	}
+	addNonEmptyEvidence(evidence, "keycloak_group_id", keycloakGroup.ID)
 	p.plan.Operations = append(p.plan.Operations, newOperation(p.nextOperationID(), domain.PlanActionKeycloakGroupMemberAdd, memberTarget(groupPath, username), "low", evidence))
 	p.plan.Summary.UpdateKeycloakMemberships++
 }
 
-func (p *repairPlanner) appendMemberRemove(groupName string, zone string, groupPath string, groupID string, username string, userID string) {
+func (p *repairPlanner) appendMemberRemove(groupName string, irodsGroup irodsGroupSnapshot, groupPath string, keycloakGroup keycloakGroupSnapshot, username string, userID string) {
 	evidence := map[string]any{
+		"change_cause":     changeCauseMembershipDrift,
 		"irods_group_name": groupName,
+		"irods_zone":       irodsGroup.Zone,
 		"keycloak_user":    username,
-		"irods_zone":       zone,
 		"keycloak_realm":   p.realm,
 		"keycloak_path":    groupPath,
 	}
-	addNonEmptyEvidence(evidence, "keycloak_group_id", groupID)
+	addNonEmptyEvidence(evidence, "keycloak_group_id", keycloakGroup.ID)
 	addNonEmptyEvidence(evidence, "keycloak_user_id", userID)
 	p.plan.Operations = append(p.plan.Operations, newOperation(p.nextOperationID(), domain.PlanActionKeycloakGroupMemberRemove, memberTarget(groupPath, username), "medium", evidence))
 	p.plan.Summary.UpdateKeycloakMemberships++
@@ -127,6 +142,7 @@ func (p *repairPlanner) appendMemberRemove(groupName string, zone string, groupP
 
 func (p *repairPlanner) appendStaleKeycloakGroupDelete(keycloakGroup keycloakGroupSnapshot) {
 	evidence := map[string]any{
+		"change_cause":     changeCauseStaleKeycloakState,
 		"irods_group_name": keycloakGroup.Name,
 		"irods_zone":       keycloakGroup.Zone,
 		"keycloak_realm":   p.realm,

@@ -61,6 +61,8 @@ func TestRepairKeycloakPlansMissingMirrorGroupAndMembership(t *testing.T) {
 		"/irods/project-alpha",
 		"/irods/project-alpha#member:alice",
 	})
+	assertEvidenceValue(t, plan.Operations[0], "change_cause", "missing_mirror_group")
+	assertEvidenceValue(t, plan.Operations[1], "change_cause", "missing_mirror_group")
 	if keycloak.createCalls != 0 || keycloak.addMemberCalls != 0 || keycloak.removeMemberCalls != 0 || keycloak.deleteGroupCalls != 0 {
 		t.Fatalf("repair planning must not mutate Keycloak, fake calls: %+v", keycloak)
 	}
@@ -92,6 +94,9 @@ func TestRepairKeycloakUsesConfiguredMirrorRoot(t *testing.T) {
 	plan, err := service.RepairKeycloak(context.Background(), domain.RepairRequest{})
 	if err != nil {
 		t.Fatalf("RepairKeycloak returned error: %v", err)
+	}
+	if plan.KeycloakMirrorRoot != "/kc-irods" {
+		t.Fatalf("unexpected plan mirror root: %q", plan.KeycloakMirrorRoot)
 	}
 
 	assertTargets(t, plan, []string{
@@ -182,6 +187,9 @@ func TestRepairKeycloakPlansMembershipDriftAndStaleMirror(t *testing.T) {
 		"/irods/project-alpha#member:bob",
 		"/irods/stale-team",
 	})
+	assertEvidenceValue(t, plan.Operations[0], "change_cause", "membership_drift")
+	assertEvidenceValue(t, plan.Operations[1], "change_cause", "membership_drift")
+	assertEvidenceValue(t, plan.Operations[2], "change_cause", "stale_keycloak_state")
 	assertEvidenceValue(t, plan.Operations[0], "keycloak_group_id", "kc-project-alpha")
 	assertEvidenceValue(t, plan.Operations[1], "keycloak_group_id", "kc-project-alpha")
 	assertEvidenceValue(t, plan.Operations[2], "keycloak_group_id", "kc-stale")
@@ -286,7 +294,6 @@ func TestApplyKeycloakRepairPlanMutatesOnlyKeycloak(t *testing.T) {
 			},
 		},
 	})
-
 	result, err := service.Apply(context.Background(), domain.ApplyRequest{
 		RequestMetadata: domain.RequestMetadata{Realm: "example", Zone: "tempZone"},
 		Plan:            &plan,
@@ -335,6 +342,7 @@ func TestApplyUsesConfiguredMirrorRootForCreateTargets(t *testing.T) {
 			},
 		},
 	})
+	plan.KeycloakMirrorRoot = "/kc-irods"
 
 	result, err := service.Apply(context.Background(), domain.ApplyRequest{
 		RequestMetadata: domain.RequestMetadata{Realm: "example", Zone: "tempZone"},
@@ -348,6 +356,36 @@ func TestApplyUsesConfiguredMirrorRootForCreateTargets(t *testing.T) {
 	}
 	if len(keycloak.createdGroups) != 1 || keycloak.createdGroups[0].Path != "/kc-irods/project-alpha" {
 		t.Fatalf("unexpected created groups: %+v", keycloak.createdGroups)
+	}
+}
+
+func TestApplyRejectsPlanWithMismatchedRuntimeMirrorRoot(t *testing.T) {
+	keycloak := &fakeKeycloakClient{}
+	service := Service{Keycloak: keycloak, MirrorRoot: "/kc-irods"}
+	plan := testApplyPlan([]domain.PlanOperation{
+		{
+			OperationID: "op-001",
+			Action:      domain.PlanActionKeycloakGroupCreate,
+			Target:      "/irods/project-alpha",
+			Risk:        "low",
+			Evidence: map[string]any{
+				"irods_group_name": "project-alpha",
+				"irods_zone":       "tempZone",
+				"keycloak_realm":   "example",
+				"keycloak_path":    "/irods/project-alpha",
+			},
+		},
+	})
+
+	_, err := service.Apply(context.Background(), domain.ApplyRequest{
+		RequestMetadata: domain.RequestMetadata{Realm: "example", Zone: "tempZone"},
+		Plan:            &plan,
+	})
+	if err == nil || !strings.Contains(err.Error(), "plan keycloak mirror root does not match runtime configuration") {
+		t.Fatalf("expected mirror root mismatch error, got %v", err)
+	}
+	if len(keycloak.createdGroups) != 0 {
+		t.Fatalf("apply should fail before mutation, got %+v", keycloak.createdGroups)
 	}
 }
 
@@ -504,13 +542,14 @@ func TestApplyAcceptAllSwitchesToPromptsNone(t *testing.T) {
 
 func testApplyPlan(operations []domain.PlanOperation) domain.SyncPlan {
 	return domain.SyncPlan{
-		PlanFormatVersion: domain.SyncPlanFormatVersion,
-		PlanID:            "plan-test",
-		Mode:              domain.SyncPlanModeRepairKeycloak,
-		Authority:         domain.SyncPlanAuthorityIRODS,
-		Realm:             "example",
-		Zone:              "tempZone",
-		Operations:        operations,
+		PlanFormatVersion:  domain.SyncPlanFormatVersion,
+		PlanID:             "plan-test",
+		Mode:               domain.SyncPlanModeRepairKeycloak,
+		Authority:          domain.SyncPlanAuthorityIRODS,
+		Realm:              "example",
+		Zone:               "tempZone",
+		KeycloakMirrorRoot: "/irods",
+		Operations:         operations,
 	}
 }
 

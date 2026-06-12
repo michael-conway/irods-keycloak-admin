@@ -29,6 +29,7 @@ func TestLoadConfigAcceptsTargetOverrides(t *testing.T) {
 	t.Setenv("IRODS_KC_E2E_ENABLED", "true")
 	t.Setenv("IRODS_KC_E2E_TARGET", "grid-stack")
 	t.Setenv("IRODS_KC_E2E_KEYCLOAK_REALM", "drs")
+	t.Setenv("IRODS_KC_E2E_KEYCLOAK_MIRROR_ROOT", "kc-irods/")
 	t.Setenv("IRODS_KC_E2E_FIXTURE_GROUPS", "project-alpha, project-beta")
 
 	cfg := LoadConfig()
@@ -40,6 +41,9 @@ func TestLoadConfigAcceptsTargetOverrides(t *testing.T) {
 	}
 	if cfg.Keycloak.Realm != "drs" {
 		t.Fatalf("unexpected realm: %q", cfg.Keycloak.Realm)
+	}
+	if cfg.Fixtures.MirrorRoot != "/kc-irods" {
+		t.Fatalf("unexpected mirror root: %q", cfg.Fixtures.MirrorRoot)
 	}
 	if len(cfg.Fixtures.Groups) != 2 || cfg.Fixtures.Groups[0] != "project-alpha" || cfg.Fixtures.Groups[1] != "project-beta" {
 		t.Fatalf("unexpected fixture groups: %+v", cfg.Fixtures.Groups)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/michael-conway/irods-keycloak-admin/internal/domain"
 	"github.com/michael-conway/irods-keycloak-admin/internal/keycloakadmin"
+	planvalidator "github.com/michael-conway/irods-keycloak-admin/internal/plan"
 )
 
 func (s *Service) readRepairSnapshots(ctx context.Context, realm string, zone string) (map[string]irodsGroupSnapshot, map[string]keycloakGroupSnapshot, error) {
@@ -87,7 +88,7 @@ func (s *Service) buildKeycloakGroupSnapshot(ctx context.Context, realm string, 
 		return keycloakGroupSnapshot{}, false, nil
 	}
 
-	groupPath := strings.TrimSpace(group.Path)
+	groupPath := planvalidator.NormalizeGroupPath(group.Path)
 	if groupPath == "" {
 		groupPath = s.mirrorPolicy().GroupPath(groupName)
 	}
@@ -110,7 +111,7 @@ func (s *Service) buildKeycloakGroupSnapshot(ctx context.Context, realm string, 
 
 func (s *Service) keycloakGroupMapping(realm string, zone string, group keycloakadmin.Group) (string, string, bool) {
 	mirrorPolicy := s.mirrorPolicy()
-	path := strings.TrimSpace(group.Path)
+	path := planvalidator.NormalizeGroupPath(group.Path)
 	mirrorName := firstAttribute(group.Attributes, mirrorAttrGroupName)
 	authority := strings.ToLower(firstAttribute(group.Attributes, mirrorAttrAuthority))
 	if mirrorName == "" && authority != domain.SyncPlanAuthorityIRODS && !mirrorPolicy.IsManagedPath(path) {
@@ -127,7 +128,7 @@ func (s *Service) keycloakGroupMapping(realm string, zone string, group keycloak
 
 	groupName := mirrorName
 	if groupName == "" {
-		groupName = mirrorPolicy.GroupNameFromPath(group.Path)
+		groupName = mirrorPolicy.GroupNameFromPath(path)
 	}
 	if groupName == "" {
 		mapping := s.Mapper.GroupToIRODS(realm, group)

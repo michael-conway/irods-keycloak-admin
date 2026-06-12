@@ -11,10 +11,11 @@ import (
 	"github.com/michael-conway/irods-keycloak-admin/internal/planreview"
 )
 
-func validateApplyPlan(syncPlan domain.SyncPlan, realm string, zone string) error {
+func validateApplyPlan(syncPlan domain.SyncPlan, realm string, zone string, mirrorRoot string) error {
 	return planvalidator.ValidateForApply(syncPlan, planvalidator.ApplyValidationOptions{
-		ExpectedRealm: realm,
-		ExpectedZone:  zone,
+		ExpectedRealm:      realm,
+		ExpectedZone:       zone,
+		ExpectedMirrorRoot: mirrorRoot,
 	})
 }
 

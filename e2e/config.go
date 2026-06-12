@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"testing"
@@ -90,7 +91,7 @@ func LoadConfig() Config {
 			InsecureSkipVerify:   envBool("IRODS_KC_E2E_KEYCLOAK_INSECURE_SKIP_VERIFY", true),
 		},
 		Fixtures: FixtureConfig{
-			MirrorRoot: envString("IRODS_KC_E2E_KEYCLOAK_MIRROR_ROOT", "/irods"),
+			MirrorRoot: normalizeMirrorRoot(envString("IRODS_KC_E2E_KEYCLOAK_MIRROR_ROOT", "/irods")),
 			Groups:     envCSV("IRODS_KC_E2E_FIXTURE_GROUPS", []string{"project-alpha", "project-beta", "irods-admins"}),
 		},
 	}
@@ -191,4 +192,19 @@ func envCSV(name string, fallback []string) []string {
 		}
 	}
 	return result
+}
+
+func normalizeMirrorRoot(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "/irods"
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	cleaned := path.Clean(value)
+	if cleaned == "." || cleaned == "" {
+		return "/irods"
+	}
+	return cleaned
 }

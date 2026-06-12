@@ -11,8 +11,9 @@ import (
 )
 
 type ApplyValidationOptions struct {
-	ExpectedRealm string
-	ExpectedZone  string
+	ExpectedRealm      string
+	ExpectedZone       string
+	ExpectedMirrorRoot string
 }
 
 func ValidateForApply(syncPlan domain.SyncPlan, opts ApplyValidationOptions) error {
@@ -40,10 +41,16 @@ func ValidateForApply(syncPlan domain.SyncPlan, opts ApplyValidationOptions) err
 	if opts.ExpectedZone != "" && syncPlan.Zone != opts.ExpectedZone {
 		return errors.New("plan zone does not match runtime configuration")
 	}
+	planMirrorRoot := NormalizeGroupPath(syncPlan.KeycloakMirrorRoot)
+	expectedMirrorRoot := NormalizeGroupPath(opts.ExpectedMirrorRoot)
+	if planMirrorRoot != "" && expectedMirrorRoot != "" && planMirrorRoot != expectedMirrorRoot {
+		return errors.New("plan keycloak mirror root does not match runtime configuration")
+	}
+	validationMirrorRoot := firstNonEmpty(expectedMirrorRoot, planMirrorRoot)
 
 	seenOperations := map[string]struct{}{}
 	for _, operation := range syncPlan.Operations {
-		if err := ValidateOperationForApply(syncPlan, operation, opts); err != nil {
+		if err := ValidateOperationForApply(syncPlan, operation, validationMirrorRoot); err != nil {
 			return err
 		}
 		operationID := strings.TrimSpace(operation.OperationID)
@@ -58,7 +65,7 @@ func ValidateForApply(syncPlan domain.SyncPlan, opts ApplyValidationOptions) err
 	return nil
 }
 
-func ValidateOperationForApply(syncPlan domain.SyncPlan, operation domain.PlanOperation, opts ApplyValidationOptions) error {
+func ValidateOperationForApply(syncPlan domain.SyncPlan, operation domain.PlanOperation, expectedMirrorRoot string) error {
 	if strings.TrimSpace(operation.Target) == "" {
 		return fmt.Errorf("operation %q target is required", operation.OperationID)
 	}
@@ -74,6 +81,9 @@ func ValidateOperationForApply(syncPlan domain.SyncPlan, operation domain.PlanOp
 		if err != nil {
 			return fmt.Errorf("operation %q: %w", operation.OperationID, err)
 		}
+		if err := validateGroupPathWithinMirrorRoot(operation.OperationID, groupPath, expectedMirrorRoot); err != nil {
+			return err
+		}
 		if evidencePath := EvidenceString(operation, "keycloak_path"); evidencePath != "" && NormalizeGroupPath(evidencePath) != groupPath {
 			return fmt.Errorf("operation %q keycloak_path evidence does not match target", operation.OperationID)
 		}
@@ -81,6 +91,9 @@ func ValidateOperationForApply(syncPlan domain.SyncPlan, operation domain.PlanOp
 		groupPath, username, err := MemberTarget(operation)
 		if err != nil {
 			return fmt.Errorf("operation %q: %w", operation.OperationID, err)
+		}
+		if err := validateGroupPathWithinMirrorRoot(operation.OperationID, groupPath, expectedMirrorRoot); err != nil {
+			return err
 		}
 		if evidencePath := EvidenceString(operation, "keycloak_path"); evidencePath != "" && NormalizeGroupPath(evidencePath) != groupPath {
 			return fmt.Errorf("operation %q keycloak_path evidence does not match target", operation.OperationID)
@@ -95,6 +108,9 @@ func ValidateOperationForApply(syncPlan domain.SyncPlan, operation domain.PlanOp
 		groupPath, err := GroupTarget(operation)
 		if err != nil {
 			return fmt.Errorf("operation %q: %w", operation.OperationID, err)
+		}
+		if err := validateGroupPathWithinMirrorRoot(operation.OperationID, groupPath, expectedMirrorRoot); err != nil {
+			return err
 		}
 		if evidencePath := EvidenceString(operation, "keycloak_path"); evidencePath != "" && NormalizeGroupPath(evidencePath) != groupPath {
 			return fmt.Errorf("operation %q keycloak_path evidence does not match target", operation.OperationID)
@@ -175,6 +191,17 @@ func GroupNameFromPath(groupPath string) string {
 	return path.Base(groupPath)
 }
 
+func validateGroupPathWithinMirrorRoot(operationID string, groupPath string, mirrorRoot string) error {
+	mirrorRoot = NormalizeGroupPath(mirrorRoot)
+	if mirrorRoot == "" {
+		return nil
+	}
+	if groupPath == mirrorRoot || strings.HasPrefix(groupPath, mirrorRoot+"/") {
+		return nil
+	}
+	return fmt.Errorf("operation %q target does not match runtime keycloak mirror root", operationID)
+}
+
 func SummaryCounts(syncPlan domain.SyncPlan) domain.PlanSummary {
 	summary := domain.PlanSummary{}
 	for _, operation := range syncPlan.Operations {
@@ -200,4 +227,13 @@ func OperationIDs(syncPlan domain.SyncPlan) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }

@@ -57,13 +57,28 @@ func TestValidateForApplyRejectsInvalidPlanBeforeMutation(t *testing.T) {
 			},
 			want: "member target must have shape",
 		},
+		{
+			name: "mirror root mismatch",
+			edit: func(plan *domain.SyncPlan) {
+				plan.KeycloakMirrorRoot = "/kc-irods"
+			},
+			want: "plan keycloak mirror root does not match runtime configuration",
+		},
+		{
+			name: "operation outside mirror root",
+			edit: func(plan *domain.SyncPlan) {
+				plan.Operations[0].Target = "/other/project-alpha"
+				plan.Operations[0].Evidence["keycloak_path"] = "/other/project-alpha"
+			},
+			want: "target does not match runtime keycloak mirror root",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			plan := validPlan()
 			tt.edit(&plan)
-			err := ValidateForApply(plan, ApplyValidationOptions{ExpectedRealm: "example", ExpectedZone: "tempZone"})
+			err := ValidateForApply(plan, ApplyValidationOptions{ExpectedRealm: "example", ExpectedZone: "tempZone", ExpectedMirrorRoot: "/irods"})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("expected error containing %q, got %v", tt.want, err)
 			}
@@ -86,8 +101,23 @@ func TestValidateForApplyAcceptsRequiresApprovalDelete(t *testing.T) {
 	}
 
 	err := ValidateForApply(plan, ApplyValidationOptions{
-		ExpectedRealm: "example",
-		ExpectedZone:  "tempZone",
+		ExpectedRealm:      "example",
+		ExpectedZone:       "tempZone",
+		ExpectedMirrorRoot: "/irods",
+	})
+	if err != nil {
+		t.Fatalf("ValidateForApply returned error: %v", err)
+	}
+}
+
+func TestValidateForApplyAcceptsLegacyPlanWithinExpectedMirrorRoot(t *testing.T) {
+	plan := validPlan()
+	plan.KeycloakMirrorRoot = ""
+
+	err := ValidateForApply(plan, ApplyValidationOptions{
+		ExpectedRealm:      "example",
+		ExpectedZone:       "tempZone",
+		ExpectedMirrorRoot: "irods/",
 	})
 	if err != nil {
 		t.Fatalf("ValidateForApply returned error: %v", err)
@@ -96,12 +126,13 @@ func TestValidateForApplyAcceptsRequiresApprovalDelete(t *testing.T) {
 
 func validPlan() domain.SyncPlan {
 	return domain.SyncPlan{
-		PlanFormatVersion: domain.SyncPlanFormatVersion,
-		PlanID:            "plan-test",
-		Mode:              domain.SyncPlanModeRepairKeycloak,
-		Authority:         domain.SyncPlanAuthorityIRODS,
-		Realm:             "example",
-		Zone:              "tempZone",
+		PlanFormatVersion:  domain.SyncPlanFormatVersion,
+		PlanID:             "plan-test",
+		Mode:               domain.SyncPlanModeRepairKeycloak,
+		Authority:          domain.SyncPlanAuthorityIRODS,
+		Realm:              "example",
+		Zone:               "tempZone",
+		KeycloakMirrorRoot: "/irods",
 		Operations: []domain.PlanOperation{{
 			OperationID: "op-001",
 			Action:      domain.PlanActionKeycloakGroupCreate,

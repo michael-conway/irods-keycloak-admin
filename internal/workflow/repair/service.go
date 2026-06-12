@@ -99,7 +99,7 @@ func (s *Service) resolveRepairScope(req domain.RepairRequest) (string, string, 
 func (s *Service) resolveApplyScope(req domain.ApplyRequest, syncPlan domain.SyncPlan) (string, string, error) {
 	realm := s.realmFor(firstNonEmpty(req.Realm, syncPlan.Realm))
 	zone := s.zoneFor(firstNonEmpty(req.Zone, syncPlan.Zone))
-	if err := validateApplyPlan(syncPlan, realm, zone); err != nil {
+	if err := validateApplyPlan(syncPlan, realm, zone, s.mirrorPolicy().Root()); err != nil {
 		return "", "", err
 	}
 	return realm, zone, nil

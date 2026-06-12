@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/michael-conway/irods-keycloak-admin/internal/domain"
@@ -90,5 +91,40 @@ func TestWritePlanFileUsesIndentedJSONContract(t *testing.T) {
 	}
 	if decoded.PlanFormatVersion != domain.SyncPlanFormatVersion {
 		t.Fatalf("unexpected plan format version: %q", decoded.PlanFormatVersion)
+	}
+}
+
+func TestPrintOperationReviewShowsCauseBeforeEvidenceDump(t *testing.T) {
+	plan := domain.SyncPlan{
+		PlanID: "plan-test",
+		Realm:  "example",
+		Zone:   "tempZone",
+	}
+	operation := domain.PlanOperation{
+		OperationID: "op-001",
+		Action:      domain.PlanActionKeycloakGroupDelete,
+		Target:      "/irods/stale-team",
+		Risk:        domain.PlanRiskRequiresApproval,
+		Evidence: map[string]any{
+			"change_cause":  "stale_keycloak_state",
+			"keycloak_path": "/irods/stale-team",
+		},
+	}
+
+	var out bytes.Buffer
+	printOperationReview(&out, plan, operation)
+	rendered := out.String()
+
+	for _, want := range []string{
+		"Cause: stale_keycloak_state",
+		"Evidence:",
+		"  change_cause: stale_keycloak_state",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected review output to contain %q, got:\n%s", want, rendered)
+		}
+	}
+	if strings.Index(rendered, "Cause:") > strings.Index(rendered, "Evidence:") {
+		t.Fatalf("expected cause line before evidence block, got:\n%s", rendered)
 	}
 }

@@ -370,6 +370,9 @@ func printOperationReview(out io.Writer, syncPlan domain.SyncPlan, operation dom
 	_, _ = fmt.Fprintf(out, "Action: %s\n", operation.Action)
 	_, _ = fmt.Fprintf(out, "Target: %s\n", operation.Target)
 	_, _ = fmt.Fprintf(out, "Risk: %s\n", operation.Risk)
+	if cause := evidenceString(operation.Evidence, "change_cause"); cause != "" {
+		_, _ = fmt.Fprintf(out, "Cause: %s\n", cause)
+	}
 	if len(operation.Evidence) == 0 {
 		return
 	}
@@ -384,8 +387,44 @@ func sortedEvidenceKeys(evidence map[string]any) []string {
 	for key := range evidence {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	sort.Slice(keys, func(i int, j int) bool {
+		left := evidenceDisplayPriority(keys[i])
+		right := evidenceDisplayPriority(keys[j])
+		if left != right {
+			return left < right
+		}
+		return keys[i] < keys[j]
+	})
 	return keys
+}
+
+func evidenceDisplayPriority(key string) int {
+	switch key {
+	case "change_cause":
+		return 0
+	case "irods_group_name", "irods_username", "irods_zone":
+		return 2
+	case "keycloak_path", "keycloak_group_id", "keycloak_user", "keycloak_user_id":
+		return 3
+	default:
+		return 10
+	}
+}
+
+func evidenceString(evidence map[string]any, key string) string {
+	if evidence == nil {
+		return ""
+	}
+	value, ok := evidence[key]
+	if !ok {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
 }
 
 func formatEvidenceValue(value any) string {

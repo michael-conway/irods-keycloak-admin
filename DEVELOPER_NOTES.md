@@ -65,7 +65,7 @@ x1. Refactor the repair workflow into smaller helpers.
   reason about.
 - Prefer incremental extraction over introducing a second orchestration layer.
 
-2. Make Keycloak mirror root and path policy explicit.
+x2. Make Keycloak mirror root and path policy explicit.
 
 - Remove hidden dependence on the hard-coded `/irods` mirror root where practical.
 - Add config-driven mirror root/path handling with stable defaults for current
