@@ -164,10 +164,11 @@ type StatusResponse struct {
 }
 
 type ConfigSummary struct {
-	ServiceName   string `json:"service_name"`
-	ListenAddress string `json:"listen_address"`
-	IRODSZone     string `json:"irods_zone,omitempty"`
-	KeycloakRealm string `json:"keycloak_realm,omitempty"`
+	ServiceName        string `json:"service_name"`
+	ListenAddress      string `json:"listen_address"`
+	IRODSZone          string `json:"irods_zone,omitempty"`
+	KeycloakRealm      string `json:"keycloak_realm,omitempty"`
+	KeycloakMirrorRoot string `json:"keycloak_mirror_root,omitempty"`
 }
 
 type ErrorResponse struct {

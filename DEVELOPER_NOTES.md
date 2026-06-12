@@ -23,120 +23,85 @@ plans derived from the larger strategy and phase plan. When the sprint changes,
 update this section first, then reconcile any stale lower-level examples in the
 rest of the document.
 
-### Sprint Plan: Controlled Keycloak Repair Apply
+### Sprint Plan: Repair Workflow Hardening
 
-Date: 2026-05-21
+Date: 2026-06-11
 
 Goal:
 
 ```text
-Turn the validated repair-keycloak dry-run plan into a controlled Keycloak
-mirror apply workflow. iRODS remains the source of truth and is read-only for
-this sprint; apply mutates only Keycloak mirror groups and memberships.
+Harden the existing repair/apply vertical slice before expanding scope.
+The working center of gravity is internal/workflow/repair/service.go.
+Keep iRODS authoritative and read-only in this sprint. Improve plan quality,
+operator confidence, configurability, and failure reporting for Keycloak mirror
+repair.
 ```
 
-Important boundary decision:
+Resume point:
+
+```text
+The implemented workflow is real in the CLI and repair service.
+internal/reconcile is not the active engine and should not drive sprint scope.
+Do not start bootstrap or broad API work until the current repair/apply slice
+is cleaner and more explicit.
+```
+
+Important boundary decisions:
 
 ```text
 irods-keycloak-admin owns orchestration and Keycloak mirror repair.
 Generic iRODS mutation remains outside this repo.
-Local irods-kc-* commands use direct go-irodsclient reads for iRODS state.
+This sprint improves plan/apply quality; it does not add iRODS write behavior.
+The CLI remains the primary execution surface while the HTTP API stays scaffolded.
 ```
 
 #### Current Sprint Tasks
 
-x1. Stabilize the plan contract.
+x1. Refactor the repair workflow into smaller helpers.
 
-- Added a plan format/version field as a compatibility marker.
-- Made operation ordering and evidence fields deterministic enough for review,
-  test comparison, and later apply validation.
-- Added `--out` and `--plan-path` support for writing a dry-run plan to a file,
-  while preserving stdout JSON for shell usage.
+- Break `internal/workflow/repair/service.go` into clearer internal helpers for
+  snapshot reads, group filtering, plan assembly, and apply execution.
+- Keep current behavior stable while making policy points easier to test and
+  reason about.
+- Prefer incremental extraction over introducing a second orchestration layer.
 
-x2. Implement Keycloak Admin REST mutation methods.
+2. Make Keycloak mirror root and path policy explicit.
 
-- Added missing mirror group creation under the configured mirror root.
-- Added missing Keycloak group member adds by resolving users by username.
-- Added stale Keycloak group member removal by group ID and user ID.
-- Added stale mirror group deletion as an idempotent low-level operation; the
-  apply command owns the explicit approval gate before calling it.
-- Kept mutation methods idempotent where Keycloak semantics permit repeat
-  calls.
+- Remove hidden dependence on the hard-coded `/irods` mirror root where practical.
+- Add config-driven mirror root/path handling with stable defaults for current
+  deployments and e2e fixtures.
+- Ensure plan targets, evidence, and apply all use the same normalized path policy.
 
-x3. Add a controlled apply command.
+3. Improve plan evidence and review quality.
 
-- Added `irods-kc-sync apply --plan plan.json` as the generic plan apply
-  surface.
-- Added preflight validation for plan format, mode, authority, realm, zone,
-  operation IDs, supported actions, and target shape before mutating Keycloak.
-- Replaced the delete-specific approval flag with `--prompts=required|all|none`.
-  `required` is the default and prompts only for `requires_approval`
-  operations; `all` prompts for every operation; `none` runs all valid
-  operations without prompts.
-- Prompted decisions are `accept`, `skip`, `accept_all`, and `skip_all`.
-  `accept_all` switches the remaining run to `prompts=none`.
-- Emits an apply result with applied, skipped, failed, and warning counts.
-- Apply mutates only Keycloak mirror state; iRODS is not touched in this sprint.
+- Add enough evidence to each operation for an operator to understand why the
+  change exists without re-running discovery mentally.
+- Keep operation ordering deterministic.
+- Make it obvious in the plan whether a change comes from a missing mirror
+  group, membership drift, stale Keycloak state, or mapping ambiguity.
 
-x4. Add live e2e apply coverage.
+4. Harden apply behavior and result reporting.
 
-- Added live apply tests for creating a missing Keycloak mirror group.
-- Added live apply tests for adding missing Keycloak mirror membership.
-- Added live apply tests for removing stale Keycloak mirror membership.
-- Added prompt-policy coverage showing stale mirror deletion is skipped without
-  approval and succeeds after explicit acceptance.
-- Added repeat-apply coverage for already-applied create, membership removal,
-  and stale mirror delete plans.
-- Re-runs dry-run after apply and confirms the targeted fixture is converged.
+- Improve mutation results and warnings so partial failures are easier to audit.
+- Tighten idempotency expectations for repeat apply on converged state.
+- Make failure messages more specific around missing Keycloak users, missing
+  group IDs, path resolution, and unsupported plan content.
 
-x5. Keep documentation and operator ergonomics current.
+5. Expand edge-case coverage before widening scope.
 
-- Documented plan file generation, apply command usage, prompt policy, and
-  Keycloak credential options.
-- Updated `make install` and direct `go run ./cmd/irods-kc-sync ...` examples
-  for plan generation and apply.
-- Updated the e2e README to cover internal Docker and irods-grid-stack endpoint
-  alignment, live apply tests, and prompt-policy behavior.
+- Add unit coverage for ambiguous Keycloak user lookup behavior, missing group
+  identifiers, mirror-path normalization, and partial apply failures.
+- Keep live e2e coverage focused on the current repair/apply slice.
+- Use tests to lock behavior before promoting the workflow into the HTTP API.
 
 Success criteria:
 
-- `irods-kc-sync repair-keycloak --dry-run` remains read-only.
-- `irods-kc-sync apply --plan ...` mutates only Keycloak mirror state.
-- Repeat apply is safe for already-converged mirror state.
-- Live e2e tests pass against the disposable Docker framework.
-
-#### Completed Sprint: Dry-run Repair Planning
-
-Command:
-
-```text
-irods-kc-sync repair-keycloak --dry-run --realm irods
-```
-
-Completed behavior:
-
-- Reads iRODS group state.
-- Reads Keycloak mirror group state.
-- Produces a plan showing missing, stale, or divergent Keycloak mirror groups.
-- Does not mutate either system.
-
-Completed implementation notes:
-
-- Added direct `go-irodsclient` access through `internal/irodsadapter`.
-- Added Keycloak Admin REST reads with recursive group/child discovery.
-- Added CLI support for explicit/e2e iRODS connection settings and fallback to
-  the iCommands environment.
-- Added `make install` and README guidance for installed and `go run` usage.
-- Added Keycloak credential documentation.
-- Added live e2e dry-run tests against the Docker framework for missing,
-  stale, and divergent Keycloak mirror groups.
-
-Deferred beyond the next apply sprint:
-
-- Full bootstrap.
-- Provisioning request approval flow.
-- Java SPI integration.
-- Direct Keycloak password or credential-provider work.
+- `repair-keycloak --dry-run` remains read-only and produces more reviewable plans.
+- `apply --plan ...` remains Keycloak-only and reports failures with better specificity.
+- Mirror root/path policy is explicit and consistently enforced.
+- Repeat apply remains safe for converged state.
+- The repair/apply slice is clean enough to reuse later from the HTTP layer
+  without first reworking the workflow again.
 
 ---
 

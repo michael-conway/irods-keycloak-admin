@@ -165,8 +165,20 @@ func runKCSyncDryRun(t *testing.T, ctx context.Context, cfg Config) domain.SyncP
 func createIRODSGroupWithMember(t *testing.T, ctx context.Context, cfg Config, groupName string, username string) {
 	t.Helper()
 
+	ensureIRODSUserExists(t, ctx, cfg, username)
 	runIAdmin(t, ctx, cfg, true, "mkgroup", groupName)
 	runIAdmin(t, ctx, cfg, true, "atg", groupName, username)
+}
+
+func ensureIRODSUserExists(t *testing.T, ctx context.Context, cfg Config, username string) {
+	t.Helper()
+
+	username = strings.TrimSpace(username)
+	if username == "" {
+		t.Fatal("iRODS username is required")
+	}
+
+	runIAdmin(t, ctx, cfg, false, "mkuser", username, "rodsuser")
 }
 
 func cleanupIRODSGroup(t *testing.T, ctx context.Context, cfg Config, groupName string) {

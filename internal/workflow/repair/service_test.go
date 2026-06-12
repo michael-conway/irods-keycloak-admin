@@ -66,6 +66,40 @@ func TestRepairKeycloakPlansMissingMirrorGroupAndMembership(t *testing.T) {
 	}
 }
 
+func TestRepairKeycloakUsesConfiguredMirrorRoot(t *testing.T) {
+	irods := &fakeIRODSClient{
+		groups: []*irodstypes.IRODSUser{{
+			ID:   100,
+			Name: "project-alpha",
+			Zone: "tempZone",
+			Type: irodstypes.IRODSUserRodsGroup,
+		}},
+		members: map[string][]*irodstypes.IRODSUser{
+			"project-alpha": {
+				{ID: 200, Name: "alice", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
+			},
+		},
+	}
+	keycloak := &fakeKeycloakClient{}
+	service := Service{
+		IRODS:        irods,
+		Keycloak:     keycloak,
+		Mapper:       mapper.Mapper{DefaultZone: "tempZone"},
+		DefaultRealm: "example",
+		MirrorRoot:   "/kc-irods",
+	}
+
+	plan, err := service.RepairKeycloak(context.Background(), domain.RepairRequest{})
+	if err != nil {
+		t.Fatalf("RepairKeycloak returned error: %v", err)
+	}
+
+	assertTargets(t, plan, []string{
+		"/kc-irods/project-alpha",
+		"/kc-irods/project-alpha#member:alice",
+	})
+}
+
 func TestRepairKeycloakPlansMembershipDriftAndStaleMirror(t *testing.T) {
 	irods := &fakeIRODSClient{
 		groups: []*irodstypes.IRODSUser{{
@@ -281,6 +315,39 @@ func TestApplyKeycloakRepairPlanMutatesOnlyKeycloak(t *testing.T) {
 	}
 	if keycloak.deleteGroupCalls != 0 {
 		t.Fatalf("apply should not delete without delete operations, got %d", keycloak.deleteGroupCalls)
+	}
+}
+
+func TestApplyUsesConfiguredMirrorRootForCreateTargets(t *testing.T) {
+	keycloak := &fakeKeycloakClient{}
+	service := Service{Keycloak: keycloak, MirrorRoot: "/kc-irods"}
+	plan := testApplyPlan([]domain.PlanOperation{
+		{
+			OperationID: "op-001",
+			Action:      domain.PlanActionKeycloakGroupCreate,
+			Target:      "/kc-irods/project-alpha",
+			Risk:        "low",
+			Evidence: map[string]any{
+				"irods_group_name": "project-alpha",
+				"irods_zone":       "tempZone",
+				"keycloak_realm":   "example",
+				"keycloak_path":    "/kc-irods/project-alpha",
+			},
+		},
+	})
+
+	result, err := service.Apply(context.Background(), domain.ApplyRequest{
+		RequestMetadata: domain.RequestMetadata{Realm: "example", Zone: "tempZone"},
+		Plan:            &plan,
+	})
+	if err != nil {
+		t.Fatalf("Apply returned error: %v", err)
+	}
+	if result.Status != "applied" || result.Applied != 1 {
+		t.Fatalf("unexpected apply result: %+v", result)
+	}
+	if len(keycloak.createdGroups) != 1 || keycloak.createdGroups[0].Path != "/kc-irods/project-alpha" {
+		t.Fatalf("unexpected created groups: %+v", keycloak.createdGroups)
 	}
 }
 

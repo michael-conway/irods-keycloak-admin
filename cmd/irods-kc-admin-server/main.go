@@ -19,6 +19,7 @@ func main() {
 	flag.StringVar(&cfg.ListenAddress, "listen-address", cfg.ListenAddress, "HTTP listen address")
 	flag.StringVar(&cfg.IRODSZone, "irods-zone", cfg.IRODSZone, "default iRODS zone")
 	flag.StringVar(&cfg.KeycloakRealm, "keycloak-realm", cfg.KeycloakRealm, "default Keycloak realm")
+	flag.StringVar(&cfg.KeycloakMirrorRoot, "keycloak-mirror-root", cfg.KeycloakMirrorRoot, "managed Keycloak mirror group root")
 	flag.Parse()
 
 	application, err := app.New(cfg)

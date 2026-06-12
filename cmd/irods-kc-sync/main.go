@@ -73,6 +73,7 @@ func runRepairKeycloak(args []string, stdout io.Writer, stderr io.Writer) int {
 	keycloakAdminUser := flags.String("keycloak-admin-user", envFirst("IRODS_KC_KEYCLOAK_ADMIN_USER", "IRODS_KC_E2E_KEYCLOAK_ADMIN_USER", "KEYCLOAK_ADMIN"), "Keycloak admin username")
 	keycloakAdminPassword := flags.String("keycloak-admin-password", envFirst("IRODS_KC_KEYCLOAK_ADMIN_PASSWORD", "IRODS_KC_E2E_KEYCLOAK_ADMIN_PASSWORD", "KEYCLOAK_ADMIN_PASSWORD"), "Keycloak admin password")
 	keycloakInsecureSkipVerify := flags.Bool("keycloak-insecure-skip-verify", envBool(false, "IRODS_KC_KEYCLOAK_INSECURE_SKIP_VERIFY", "IRODS_KC_E2E_KEYCLOAK_INSECURE_SKIP_VERIFY"), "skip Keycloak TLS certificate verification for local test stacks")
+	keycloakMirrorRoot := flags.String("keycloak-mirror-root", firstNonEmpty(cfg.KeycloakMirrorRoot, envFirst("IRODS_KC_E2E_KEYCLOAK_MIRROR_ROOT")), "managed Keycloak mirror group root")
 	outPath := flags.String("out", "", "write the dry-run plan JSON to this file while also preserving stdout JSON")
 	planPath := flags.String("plan-path", "", "alias for --out")
 
@@ -145,6 +146,7 @@ func runRepairKeycloak(args []string, stdout io.Writer, stderr io.Writer) int {
 		Mapper:       mapper.Mapper{DefaultZone: *zone},
 		DefaultRealm: *realm,
 		DefaultZone:  *zone,
+		MirrorRoot:   *keycloakMirrorRoot,
 	}
 	plan, err := service.RepairKeycloak(ctx, domain.RepairRequest{
 		RequestMetadata: domain.RequestMetadata{
@@ -188,6 +190,7 @@ func runApply(args []string, stdout io.Writer, stderr io.Writer) int {
 	keycloakAdminUser := flags.String("keycloak-admin-user", envFirst("IRODS_KC_KEYCLOAK_ADMIN_USER", "IRODS_KC_E2E_KEYCLOAK_ADMIN_USER", "KEYCLOAK_ADMIN"), "Keycloak admin username")
 	keycloakAdminPassword := flags.String("keycloak-admin-password", envFirst("IRODS_KC_KEYCLOAK_ADMIN_PASSWORD", "IRODS_KC_E2E_KEYCLOAK_ADMIN_PASSWORD", "KEYCLOAK_ADMIN_PASSWORD"), "Keycloak admin password")
 	keycloakInsecureSkipVerify := flags.Bool("keycloak-insecure-skip-verify", envBool(false, "IRODS_KC_KEYCLOAK_INSECURE_SKIP_VERIFY", "IRODS_KC_E2E_KEYCLOAK_INSECURE_SKIP_VERIFY"), "skip Keycloak TLS certificate verification for local test stacks")
+	keycloakMirrorRoot := flags.String("keycloak-mirror-root", firstNonEmpty(cfg.KeycloakMirrorRoot, envFirst("IRODS_KC_E2E_KEYCLOAK_MIRROR_ROOT")), "managed Keycloak mirror group root")
 
 	if err := flags.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -242,6 +245,7 @@ func runApply(args []string, stdout io.Writer, stderr io.Writer) int {
 		Keycloak:     keycloakClient,
 		DefaultRealm: *realm,
 		DefaultZone:  *zone,
+		MirrorRoot:   *keycloakMirrorRoot,
 		PromptMode:   promptMode,
 	}
 	if promptMode != planreview.PromptModeNone {
