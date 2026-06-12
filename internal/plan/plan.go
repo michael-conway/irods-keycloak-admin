@@ -14,6 +14,7 @@ type ApplyValidationOptions struct {
 	ExpectedRealm      string
 	ExpectedZone       string
 	ExpectedMirrorRoot string
+	ExpectedTarget     string
 }
 
 func ValidateForApply(syncPlan domain.SyncPlan, opts ApplyValidationOptions) error {
@@ -23,8 +24,16 @@ func ValidateForApply(syncPlan domain.SyncPlan, opts ApplyValidationOptions) err
 	if strings.TrimSpace(syncPlan.PlanID) == "" {
 		return errors.New("plan_id is required")
 	}
-	if syncPlan.Mode != domain.SyncPlanModeRepairKeycloak {
+	if syncPlan.Mode != domain.SyncPlanModeSync {
 		return fmt.Errorf("unsupported plan mode %q", syncPlan.Mode)
+	}
+	planTarget := normalizeTargetSystem(syncPlan.TargetSystem)
+	if planTarget == "" {
+		planTarget = domain.SyncTargetKeycloak
+	}
+	expectedTarget := normalizeTargetSystem(opts.ExpectedTarget)
+	if expectedTarget != "" && planTarget != expectedTarget {
+		return fmt.Errorf("unsupported plan target_system %q", syncPlan.TargetSystem)
 	}
 	if syncPlan.Authority != domain.SyncPlanAuthorityIRODS {
 		return fmt.Errorf("unsupported plan authority %q", syncPlan.Authority)
@@ -47,10 +56,11 @@ func ValidateForApply(syncPlan domain.SyncPlan, opts ApplyValidationOptions) err
 		return errors.New("plan keycloak mirror root does not match runtime configuration")
 	}
 	validationMirrorRoot := firstNonEmpty(expectedMirrorRoot, planMirrorRoot)
+	validationTarget := planTarget
 
 	seenOperations := map[string]struct{}{}
 	for _, operation := range syncPlan.Operations {
-		if err := ValidateOperationForApply(syncPlan, operation, validationMirrorRoot); err != nil {
+		if err := ValidateOperationForApply(syncPlan, operation, validationMirrorRoot, validationTarget); err != nil {
 			return err
 		}
 		operationID := strings.TrimSpace(operation.OperationID)
@@ -65,7 +75,7 @@ func ValidateForApply(syncPlan domain.SyncPlan, opts ApplyValidationOptions) err
 	return nil
 }
 
-func ValidateOperationForApply(syncPlan domain.SyncPlan, operation domain.PlanOperation, expectedMirrorRoot string) error {
+func ValidateOperationForApply(syncPlan domain.SyncPlan, operation domain.PlanOperation, expectedMirrorRoot string, targetSystem string) error {
 	if strings.TrimSpace(operation.Target) == "" {
 		return fmt.Errorf("operation %q target is required", operation.OperationID)
 	}
@@ -77,6 +87,9 @@ func ValidateOperationForApply(syncPlan domain.SyncPlan, operation domain.PlanOp
 	}
 	switch operation.Action {
 	case domain.PlanActionKeycloakGroupCreate:
+		if targetSystem != domain.SyncTargetKeycloak {
+			return fmt.Errorf("operation %q has unsupported action %q for target %q", operation.OperationID, operation.Action, targetSystem)
+		}
 		groupPath, err := GroupTarget(operation)
 		if err != nil {
 			return fmt.Errorf("operation %q: %w", operation.OperationID, err)
@@ -88,6 +101,9 @@ func ValidateOperationForApply(syncPlan domain.SyncPlan, operation domain.PlanOp
 			return fmt.Errorf("operation %q keycloak_path evidence does not match target", operation.OperationID)
 		}
 	case domain.PlanActionKeycloakGroupMemberAdd, domain.PlanActionKeycloakGroupMemberRemove:
+		if targetSystem != domain.SyncTargetKeycloak {
+			return fmt.Errorf("operation %q has unsupported action %q for target %q", operation.OperationID, operation.Action, targetSystem)
+		}
 		groupPath, username, err := MemberTarget(operation)
 		if err != nil {
 			return fmt.Errorf("operation %q: %w", operation.OperationID, err)
@@ -102,6 +118,9 @@ func ValidateOperationForApply(syncPlan domain.SyncPlan, operation domain.PlanOp
 			return fmt.Errorf("operation %q member target username has invalid characters", operation.OperationID)
 		}
 	case domain.PlanActionKeycloakGroupDelete:
+		if targetSystem != domain.SyncTargetKeycloak {
+			return fmt.Errorf("operation %q has unsupported action %q for target %q", operation.OperationID, operation.Action, targetSystem)
+		}
 		if operation.Risk != domain.PlanRiskRequiresApproval {
 			return fmt.Errorf("operation %q group delete must be marked requires_approval", operation.OperationID)
 		}
@@ -115,10 +134,97 @@ func ValidateOperationForApply(syncPlan domain.SyncPlan, operation domain.PlanOp
 		if evidencePath := EvidenceString(operation, "keycloak_path"); evidencePath != "" && NormalizeGroupPath(evidencePath) != groupPath {
 			return fmt.Errorf("operation %q keycloak_path evidence does not match target", operation.OperationID)
 		}
+	case domain.PlanActionIRODSUserCreate, domain.PlanActionIRODSUserMetadataSync:
+		if targetSystem != domain.SyncTargetIRODS {
+			return fmt.Errorf("operation %q has unsupported action %q for target %q", operation.OperationID, operation.Action, targetSystem)
+		}
+		username, err := IRODSUserTarget(operation)
+		if err != nil {
+			return fmt.Errorf("operation %q: %w", operation.OperationID, err)
+		}
+		if EvidenceString(operation, "keycloak_user_id") == "" {
+			return fmt.Errorf("operation %q keycloak_user_id evidence is required", operation.OperationID)
+		}
+		if evidenceUsername := firstNonEmpty(EvidenceString(operation, "irods_username"), EvidenceString(operation, "keycloak_username")); evidenceUsername != "" && evidenceUsername != username {
+			return fmt.Errorf("operation %q username evidence does not match target", operation.OperationID)
+		}
+	case domain.PlanActionIRODSGroupCreate, domain.PlanActionIRODSGroupMetadataSync:
+		if targetSystem != domain.SyncTargetIRODS {
+			return fmt.Errorf("operation %q has unsupported action %q for target %q", operation.OperationID, operation.Action, targetSystem)
+		}
+		groupName, err := IRODSGroupTarget(operation)
+		if err != nil {
+			return fmt.Errorf("operation %q: %w", operation.OperationID, err)
+		}
+		if EvidenceString(operation, "keycloak_group_id") == "" {
+			return fmt.Errorf("operation %q keycloak_group_id evidence is required", operation.OperationID)
+		}
+		if evidenceGroupName := firstNonEmpty(EvidenceString(operation, "irods_group_name"), EvidenceString(operation, "keycloak_group_name")); evidenceGroupName != "" && evidenceGroupName != groupName {
+			return fmt.Errorf("operation %q group name evidence does not match target", operation.OperationID)
+		}
+	case domain.PlanActionIRODSGroupMemberAdd, domain.PlanActionIRODSGroupMemberRemove:
+		if targetSystem != domain.SyncTargetIRODS {
+			return fmt.Errorf("operation %q has unsupported action %q for target %q", operation.OperationID, operation.Action, targetSystem)
+		}
+		groupName, username, err := IRODSMemberTarget(operation)
+		if err != nil {
+			return fmt.Errorf("operation %q: %w", operation.OperationID, err)
+		}
+		if EvidenceString(operation, "keycloak_group_id") == "" {
+			return fmt.Errorf("operation %q keycloak_group_id evidence is required", operation.OperationID)
+		}
+		if EvidenceString(operation, "keycloak_user_id") == "" {
+			return fmt.Errorf("operation %q keycloak_user_id evidence is required", operation.OperationID)
+		}
+		if evidenceGroupName := EvidenceString(operation, "irods_group_name"); evidenceGroupName != "" && evidenceGroupName != groupName {
+			return fmt.Errorf("operation %q group name evidence does not match target", operation.OperationID)
+		}
+		if evidenceUsername := firstNonEmpty(EvidenceString(operation, "irods_username"), EvidenceString(operation, "keycloak_username")); evidenceUsername != "" && evidenceUsername != username {
+			return fmt.Errorf("operation %q username evidence does not match target", operation.OperationID)
+		}
 	default:
 		return fmt.Errorf("operation %q has unsupported action %q", operation.OperationID, operation.Action)
 	}
 	return nil
+}
+
+func IRODSUserTarget(operation domain.PlanOperation) (string, error) {
+	username := strings.TrimSpace(operation.Target)
+	if username == "" {
+		return "", errors.New("iRODS user target username is required")
+	}
+	if strings.Contains(username, "#") || strings.Contains(username, "/") {
+		return "", errors.New("iRODS user target username has invalid characters")
+	}
+	return username, nil
+}
+
+func IRODSGroupTarget(operation domain.PlanOperation) (string, error) {
+	groupName := strings.TrimSpace(operation.Target)
+	if groupName == "" {
+		return "", errors.New("iRODS group target name is required")
+	}
+	if strings.Contains(groupName, "#") || strings.Contains(groupName, "/") {
+		return "", errors.New("iRODS group target name has invalid characters")
+	}
+	return groupName, nil
+}
+
+func IRODSMemberTarget(operation domain.PlanOperation) (string, string, error) {
+	target := strings.TrimSpace(operation.Target)
+	parts := strings.Split(target, "#member:")
+	if len(parts) != 2 {
+		return "", "", errors.New("iRODS member target must have shape group-name#member:username")
+	}
+	groupName, err := IRODSGroupTarget(domain.PlanOperation{Target: parts[0]})
+	if err != nil {
+		return "", "", err
+	}
+	username, err := IRODSUserTarget(domain.PlanOperation{Target: parts[1]})
+	if err != nil {
+		return "", "", err
+	}
+	return groupName, username, nil
 }
 
 func GroupTarget(operation domain.PlanOperation) (string, error) {
@@ -212,6 +318,16 @@ func SummaryCounts(syncPlan domain.SyncPlan) domain.PlanSummary {
 			summary.UpdateKeycloakMemberships++
 		case domain.PlanActionKeycloakGroupDelete:
 			summary.DeleteKeycloakMirrors++
+		case domain.PlanActionIRODSUserCreate:
+			summary.CreateIRODSUsers++
+		case domain.PlanActionIRODSUserMetadataSync:
+			summary.UpdateIRODSUserMetadata++
+		case domain.PlanActionIRODSGroupCreate:
+			summary.CreateIRODSGroups++
+		case domain.PlanActionIRODSGroupMetadataSync:
+			summary.UpdateIRODSGroupMetadata++
+		case domain.PlanActionIRODSGroupMemberAdd, domain.PlanActionIRODSGroupMemberRemove:
+			summary.UpdateIRODSMemberships++
 		}
 		if operation.Risk == domain.PlanRiskRequiresApproval {
 			summary.RequiresApproval++
@@ -236,4 +352,8 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func normalizeTargetSystem(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }

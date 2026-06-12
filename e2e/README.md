@@ -50,10 +50,11 @@ in this directory may call `LoadConfig()` directly and must not require live
 containers.
 
 The live tests generate repair plans from the running systems and apply filtered
-plans against temporary `kcapply*` and `kcdry*` groups. Apply tests mutate only
-Keycloak mirror state through `irods-kc-sync apply`; iRODS fixture setup still
-uses `iadmin`. The apply coverage also replays the same plan after convergence
-to verify repeat apply behavior.
+plans against temporary `kcapply*`, `kcdry*`, and `kcirodsuser*` fixtures. Apply
+tests cover Keycloak mirror repair plus one narrow Keycloak-to-iRODS user
+mutation through `irods-kc-sync apply`; iRODS fixture setup and cleanup still use
+`iadmin`. The apply coverage also replays the same plan after convergence to
+verify repeat apply behavior.
 
 Some live fixture setup uses `docker exec` against the iRODS provider container
 to run the same `iadmin` operations used by the disposable stack setup scripts.
@@ -72,7 +73,7 @@ IRODS_KC_E2E_KEYCLOAK_INSECURE_SKIP_VERIFY=true
 ```
 
 These map to the same command-line flags used by `irods-kc-sync
-repair-keycloak --dry-run` and `irods-kc-sync apply`.
+sync --dry-run` and `irods-kc-sync apply`.
 
 The apply e2e tests use prompt policy explicitly:
 

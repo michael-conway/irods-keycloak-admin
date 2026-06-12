@@ -21,6 +21,7 @@ import (
 	"github.com/michael-conway/irods-keycloak-admin/internal/keycloakadmin"
 	"github.com/michael-conway/irods-keycloak-admin/internal/mapper"
 	"github.com/michael-conway/irods-keycloak-admin/internal/planreview"
+	"github.com/michael-conway/irods-keycloak-admin/internal/workflow/provisioning"
 	"github.com/michael-conway/irods-keycloak-admin/internal/workflow/repair"
 )
 
@@ -37,7 +38,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	switch args[0] {
-	case "repair-keycloak":
+	case "sync", "synch", "repair-keycloak":
 		return runRepairKeycloak(args[1:], stdout, stderr)
 	case "apply":
 		return runApply(args[1:], stdout, stderr)
@@ -52,10 +53,14 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 func runRepairKeycloak(args []string, stdout io.Writer, stderr io.Writer) int {
 	cfg := config.FromEnv()
-	flags := flag.NewFlagSet("repair-keycloak", flag.ContinueOnError)
+	flags := flag.NewFlagSet("sync", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
-	dryRun := flags.Bool("dry-run", false, "produce a repair plan without mutating iRODS or Keycloak")
+	dryRun := flags.Bool("dry-run", false, "produce a sync plan without mutating iRODS or Keycloak")
+	target := flags.String("target", domain.SyncTargetKeycloak, "sync target system: keycloak or irods")
+	keycloakUserID := flags.String("keycloak-user-id", "", "Keycloak user ID to plan for --target=irods")
+	keycloakGroupID := flags.String("keycloak-group-id", "", "Keycloak group ID to plan for --target=irods")
+	keycloakGroupPath := flags.String("keycloak-group-path", "", "Keycloak group path to plan for --target=irods")
 	realm := flags.String("realm", firstNonEmpty(cfg.KeycloakRealm, envFirst("IRODS_KC_E2E_KEYCLOAK_REALM")), "Keycloak realm to inspect")
 	zone := flags.String("zone", firstNonEmpty(cfg.IRODSZone, envFirst("IRODS_KC_E2E_IRODS_ZONE")), "iRODS zone to inspect")
 
@@ -76,6 +81,7 @@ func runRepairKeycloak(args []string, stdout io.Writer, stderr io.Writer) int {
 	keycloakMirrorRoot := flags.String("keycloak-mirror-root", firstNonEmpty(cfg.KeycloakMirrorRoot, envFirst("IRODS_KC_E2E_KEYCLOAK_MIRROR_ROOT")), "managed Keycloak mirror group root")
 	outPath := flags.String("out", "", "write the dry-run plan JSON to this file while also preserving stdout JSON")
 	planPath := flags.String("plan-path", "", "alias for --out")
+	passwordActionReportPath := flags.String("password-action-report", "", "write optional scenario-3 password-action report JSON to this file; reporting only, no password mutation")
 
 	if err := flags.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -88,7 +94,12 @@ func runRepairKeycloak(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 	if !*dryRun {
-		_, _ = fmt.Fprintln(stderr, "repair-keycloak currently supports planning only; pass --dry-run")
+		_, _ = fmt.Fprintln(stderr, "sync currently supports planning only; pass --dry-run")
+		return 2
+	}
+	targetSystem, err := normalizeSyncTarget(*target)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
 	if strings.TrimSpace(*realm) == "" {
@@ -96,6 +107,11 @@ func runRepairKeycloak(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 	outputPath, err := resolvePlanOutputPath(*outPath, *planPath)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+		return 2
+	}
+	irodsSelector, err := validateIRODSSyncSelector(targetSystem, *keycloakUserID, *keycloakGroupID, *keycloakGroupPath)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 2
@@ -140,29 +156,65 @@ func runRepairKeycloak(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	service := repair.Service{
-		IRODS:        irodsClient,
-		Keycloak:     keycloakClient,
-		Mapper:       mapper.Mapper{DefaultZone: *zone},
-		DefaultRealm: *realm,
-		DefaultZone:  *zone,
-		MirrorRoot:   *keycloakMirrorRoot,
-	}
-	plan, err := service.RepairKeycloak(ctx, domain.RepairRequest{
-		RequestMetadata: domain.RequestMetadata{
+	var plan domain.SyncPlan
+	if targetSystem == domain.SyncTargetIRODS {
+		service := provisioning.Service{
+			IRODS:        irodsClient,
+			Keycloak:     keycloakClient,
+			DefaultRealm: *realm,
+			DefaultZone:  *zone,
+		}
+		requestMetadata := domain.RequestMetadata{
 			Realm:  *realm,
 			Zone:   *zone,
 			DryRun: true,
-		},
-	})
+			Source: "sync-cli",
+		}
+		switch irodsSelector.kind {
+		case irodsSyncSelectorUser:
+			plan, err = service.PlanUser(ctx, domain.ProvisionUserRequest{
+				RequestMetadata: requestMetadata,
+				KeycloakUserID:  *keycloakUserID,
+			})
+		case irodsSyncSelectorGroup:
+			plan, err = service.PlanGroup(ctx, domain.ProvisionGroupRequest{
+				RequestMetadata:   requestMetadata,
+				KeycloakGroupID:   *keycloakGroupID,
+				KeycloakGroupPath: *keycloakGroupPath,
+			})
+		}
+	} else {
+		service := repair.Service{
+			IRODS:        irodsClient,
+			Keycloak:     keycloakClient,
+			Mapper:       mapper.Mapper{DefaultZone: *zone},
+			DefaultRealm: *realm,
+			DefaultZone:  *zone,
+			MirrorRoot:   *keycloakMirrorRoot,
+		}
+		plan, err = service.RepairKeycloak(ctx, domain.RepairRequest{
+			RequestMetadata: domain.RequestMetadata{
+				Realm:  *realm,
+				Zone:   *zone,
+				DryRun: true,
+			},
+		})
+	}
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "repair-keycloak dry-run failed: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "sync --dry-run failed: %v\n", err)
 		return 1
 	}
 
 	if outputPath != "" {
 		if err := writePlanFile(outputPath, plan); err != nil {
 			_, _ = fmt.Fprintf(stderr, "write plan file: %v\n", err)
+			return 1
+		}
+	}
+	if reportPath := strings.TrimSpace(*passwordActionReportPath); reportPath != "" {
+		report := buildPasswordActionReport(plan)
+		if err := writePasswordActionReportFile(reportPath, report); err != nil {
+			_, _ = fmt.Fprintf(stderr, "write password action report: %v\n", err)
 			return 1
 		}
 	}
@@ -178,10 +230,17 @@ func runApply(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("apply", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
-	planPath := flags.String("plan", "", "repair-keycloak plan JSON to apply")
+	planPath := flags.String("plan", "", "sync plan JSON to apply")
 	realm := flags.String("realm", firstNonEmpty(cfg.KeycloakRealm, envFirst("IRODS_KC_E2E_KEYCLOAK_REALM")), "expected Keycloak realm for the plan")
 	zone := flags.String("zone", firstNonEmpty(cfg.IRODSZone, envFirst("IRODS_KC_E2E_IRODS_ZONE")), "expected iRODS zone for the plan")
 	prompts := flags.String("prompts", string(planreview.PromptModeRequired), "prompt policy: required, all, or none")
+
+	irodsEnv := flags.String("irods-env", os.Getenv("IRODS_ENVIRONMENT_FILE"), "iCommands environment file; defaults to ~/.irods/irods_environment.json when no direct iRODS host is provided")
+	irodsHost := flags.String("irods-host", envFirst("IRODS_KC_IRODS_HOST", "IRODS_KC_E2E_IRODS_PROVIDER_HOST"), "iRODS provider host for direct connection")
+	irodsPort := flags.Int("irods-port", envInt(0, "IRODS_KC_IRODS_PORT", "IRODS_KC_E2E_IRODS_PROVIDER_PORT"), "iRODS provider port for direct connection")
+	irodsUser := flags.String("irods-user", envFirst("IRODS_KC_IRODS_USER", "IRODS_KC_IRODS_ADMIN_USER", "IRODS_KC_E2E_IRODS_ADMIN_USER"), "iRODS user for direct connection")
+	irodsPassword := flags.String("irods-password", envFirst("IRODS_KC_IRODS_PASSWORD", "IRODS_KC_IRODS_ADMIN_PASSWORD", "IRODS_KC_E2E_IRODS_ADMIN_PASSWORD"), "iRODS password for direct connection")
+	irodsResource := flags.String("irods-resource", envFirst("IRODS_KC_IRODS_RESOURCE", "IRODS_KC_E2E_IRODS_PROVIDER_RESOURCE"), "default iRODS resource for direct connection")
 
 	keycloakURL := flags.String("keycloak-url", envFirst("IRODS_KC_KEYCLOAK_BASE_URL", "IRODS_KC_E2E_KEYCLOAK_BASE_URL"), "Keycloak base URL")
 	keycloakAdminRealm := flags.String("keycloak-admin-realm", envFirst("IRODS_KC_KEYCLOAK_ADMIN_REALM"), "Keycloak realm used to obtain the admin token")
@@ -226,6 +285,57 @@ func runApply(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+
+	planTarget := strings.ToLower(strings.TrimSpace(syncPlan.TargetSystem))
+	if planTarget == "" {
+		planTarget = domain.SyncTargetKeycloak
+	}
+	if planTarget == domain.SyncTargetIRODS {
+		irodsClient, account, err := newIRODSClient(*irodsEnv, irodsadapter.ConnectionConfig{
+			Host:            *irodsHost,
+			Port:            *irodsPort,
+			Zone:            firstNonEmpty(*zone, cfg.IRODSZone),
+			Username:        *irodsUser,
+			Password:        *irodsPassword,
+			DefaultResource: *irodsResource,
+		})
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "initialize iRODS client: %v\n", err)
+			return 1
+		}
+		defer irodsClient.Close()
+		if strings.TrimSpace(*zone) == "" && account != nil {
+			*zone = account.ClientZone
+		}
+		service := provisioning.Service{
+			IRODS:        irodsClient,
+			DefaultRealm: *realm,
+			DefaultZone:  *zone,
+			PromptMode:   promptMode,
+		}
+		if promptMode != planreview.PromptModeNone {
+			service.Reviewer = newTerminalReviewer(os.Stdin, stderr)
+		}
+		result, err := service.Apply(ctx, domain.ApplyRequest{
+			RequestMetadata: domain.RequestMetadata{
+				Realm: *realm,
+				Zone:  *zone,
+			},
+			Plan: &syncPlan,
+		})
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "apply failed: %v\n", err)
+			return 1
+		}
+		if err := writeApplyResultJSON(stdout, result); err != nil {
+			_, _ = fmt.Fprintf(stderr, "write apply result: %v\n", err)
+			return 1
+		}
+		if result.Failed > 0 {
+			return 1
+		}
+		return 0
+	}
 
 	keycloakClient, err := keycloakadmin.NewHTTPClient(keycloakadmin.HTTPClientConfig{
 		BaseURL:            firstNonEmpty(*keycloakURL, "https://127.0.0.1:8443"),
@@ -324,6 +434,74 @@ func writeApplyResultJSON(writer io.Writer, result domain.ApplyResult) error {
 	return writeIndentedJSON(writer, result)
 }
 
+func writePasswordActionReportFile(path string, report domain.PasswordActionReport) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return writeIndentedJSON(file, report)
+}
+
+func buildPasswordActionReport(plan domain.SyncPlan) domain.PasswordActionReport {
+	report := domain.PasswordActionReport{
+		ReportFormatVersion: "irods-keycloak-admin.password-action-report.v1",
+		PlanID:              plan.PlanID,
+		Realm:               plan.Realm,
+		Zone:                plan.Zone,
+		TargetSystem:        plan.TargetSystem,
+		Notification:        "out_of_scope",
+		CredentialPath:      "future_keycloak_to_irods_direct",
+		Actions:             []domain.PasswordAction{},
+	}
+	seenUsers := map[string]struct{}{}
+	for _, operation := range plan.Operations {
+		switch operation.Action {
+		case domain.PlanActionIRODSUserCreate:
+			action := passwordActionFromOperation(operation, "password_setup_required", "irods_user_create_planned")
+			if action.IRODSUsername == "" {
+				action.IRODSUsername = operation.Target
+			}
+			if passwordActionKey(action) == "" {
+				continue
+			}
+			if _, exists := seenUsers[passwordActionKey(action)]; exists {
+				continue
+			}
+			seenUsers[passwordActionKey(action)] = struct{}{}
+			report.Actions = append(report.Actions, action)
+		case domain.PlanActionIRODSUserMetadataSync:
+			action := passwordActionFromOperation(operation, "credential_state_unknown", "existing_irods_user_metadata_sync_planned")
+			if action.IRODSUsername == "" {
+				action.IRODSUsername = operation.Target
+			}
+			key := passwordActionKey(action)
+			if key == "" {
+				continue
+			}
+			if _, exists := seenUsers[key]; exists {
+				continue
+			}
+			seenUsers[key] = struct{}{}
+			report.Actions = append(report.Actions, action)
+		}
+	}
+	return report
+}
+
+func passwordActionFromOperation(operation domain.PlanOperation, action string, reason string) domain.PasswordAction {
+	return domain.PasswordAction{
+		Action:         action,
+		KeycloakUserID: evidenceString(operation.Evidence, "keycloak_user_id"),
+		IRODSUsername:  firstNonEmpty(evidenceString(operation.Evidence, "irods_username"), evidenceString(operation.Evidence, "keycloak_username")),
+		Reason:         reason,
+	}
+}
+
+func passwordActionKey(action domain.PasswordAction) string {
+	return firstNonEmpty(action.KeycloakUserID, action.IRODSUsername)
+}
+
 func writeIndentedJSON(writer io.Writer, value any) error {
 	encoder := json.NewEncoder(writer)
 	encoder.SetIndent("", "  ")
@@ -331,9 +509,55 @@ func writeIndentedJSON(writer io.Writer, value any) error {
 }
 
 func usage(out io.Writer) {
-	_, _ = fmt.Fprintln(out, "usage: irods-kc-sync {plan|apply|bootstrap-keycloak|repair-keycloak}")
-	_, _ = fmt.Fprintln(out, "       irods-kc-sync repair-keycloak --dry-run [--realm REALM] [--zone ZONE] [--out PLAN.json]")
+	_, _ = fmt.Fprintln(out, "usage: irods-kc-sync {plan|apply|bootstrap-keycloak|sync}")
+	_, _ = fmt.Fprintln(out, "       irods-kc-sync sync --dry-run [--target keycloak|irods] [--keycloak-user-id USER_ID | --keycloak-group-id GROUP_ID | --keycloak-group-path GROUP_PATH] [--realm REALM] [--zone ZONE] [--out PLAN.json] [--password-action-report REPORT.json]")
 	_, _ = fmt.Fprintln(out, "       irods-kc-sync apply --plan PLAN.json [--realm REALM] [--zone ZONE] [--prompts required|all|none]")
+}
+
+func normalizeSyncTarget(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "", domain.SyncTargetKeycloak:
+		return domain.SyncTargetKeycloak, nil
+	case domain.SyncTargetIRODS:
+		return domain.SyncTargetIRODS, nil
+	default:
+		return "", fmt.Errorf("sync target must be one of: %s, %s", domain.SyncTargetKeycloak, domain.SyncTargetIRODS)
+	}
+}
+
+type irodsSyncSelectorKind string
+
+const (
+	irodsSyncSelectorNone  irodsSyncSelectorKind = ""
+	irodsSyncSelectorUser  irodsSyncSelectorKind = "user"
+	irodsSyncSelectorGroup irodsSyncSelectorKind = "group"
+)
+
+type irodsSyncSelector struct {
+	kind irodsSyncSelectorKind
+}
+
+func validateIRODSSyncSelector(targetSystem string, keycloakUserID string, keycloakGroupID string, keycloakGroupPath string) (irodsSyncSelector, error) {
+	if targetSystem != domain.SyncTargetIRODS {
+		return irodsSyncSelector{}, nil
+	}
+
+	hasUser := strings.TrimSpace(keycloakUserID) != ""
+	hasGroupID := strings.TrimSpace(keycloakGroupID) != ""
+	hasGroupPath := strings.TrimSpace(keycloakGroupPath) != ""
+	hasGroup := hasGroupID || hasGroupPath
+
+	switch {
+	case hasUser && hasGroup:
+		return irodsSyncSelector{}, fmt.Errorf("sync --target=irods accepts either --keycloak-user-id or a group selector, not both")
+	case hasUser:
+		return irodsSyncSelector{kind: irodsSyncSelectorUser}, nil
+	case hasGroup:
+		return irodsSyncSelector{kind: irodsSyncSelectorGroup}, nil
+	default:
+		return irodsSyncSelector{}, fmt.Errorf("sync --target=irods requires --keycloak-user-id, --keycloak-group-id, or --keycloak-group-path")
+	}
 }
 
 type terminalReviewer struct {

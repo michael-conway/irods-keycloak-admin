@@ -28,6 +28,13 @@ func TestValidateForApplyRejectsInvalidPlanBeforeMutation(t *testing.T) {
 			want: "unsupported plan mode",
 		},
 		{
+			name: "target",
+			edit: func(plan *domain.SyncPlan) {
+				plan.TargetSystem = domain.SyncTargetIRODS
+			},
+			want: "unsupported plan target_system",
+		},
+		{
 			name: "authority",
 			edit: func(plan *domain.SyncPlan) {
 				plan.Authority = "keycloak"
@@ -78,7 +85,12 @@ func TestValidateForApplyRejectsInvalidPlanBeforeMutation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			plan := validPlan()
 			tt.edit(&plan)
-			err := ValidateForApply(plan, ApplyValidationOptions{ExpectedRealm: "example", ExpectedZone: "tempZone", ExpectedMirrorRoot: "/irods"})
+			err := ValidateForApply(plan, ApplyValidationOptions{
+				ExpectedRealm:      "example",
+				ExpectedZone:       "tempZone",
+				ExpectedMirrorRoot: "/irods",
+				ExpectedTarget:     domain.SyncTargetKeycloak,
+			})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("expected error containing %q, got %v", tt.want, err)
 			}
@@ -104,6 +116,7 @@ func TestValidateForApplyAcceptsRequiresApprovalDelete(t *testing.T) {
 		ExpectedRealm:      "example",
 		ExpectedZone:       "tempZone",
 		ExpectedMirrorRoot: "/irods",
+		ExpectedTarget:     domain.SyncTargetKeycloak,
 	})
 	if err != nil {
 		t.Fatalf("ValidateForApply returned error: %v", err)
@@ -118,9 +131,165 @@ func TestValidateForApplyAcceptsLegacyPlanWithinExpectedMirrorRoot(t *testing.T)
 		ExpectedRealm:      "example",
 		ExpectedZone:       "tempZone",
 		ExpectedMirrorRoot: "irods/",
+		ExpectedTarget:     domain.SyncTargetKeycloak,
 	})
 	if err != nil {
 		t.Fatalf("ValidateForApply returned error: %v", err)
+	}
+}
+
+func TestValidateForApplyAcceptsIRODSUserPlan(t *testing.T) {
+	plan := domain.SyncPlan{
+		PlanFormatVersion: domain.SyncPlanFormatVersion,
+		PlanID:            "plan-test",
+		Mode:              domain.SyncPlanModeSync,
+		TargetSystem:      domain.SyncTargetIRODS,
+		Authority:         domain.SyncPlanAuthorityIRODS,
+		Realm:             "example",
+		Zone:              "tempZone",
+		Operations: []domain.PlanOperation{{
+			OperationID: "op-001",
+			Action:      domain.PlanActionIRODSUserCreate,
+			Target:      "alice",
+			Risk:        "low",
+			Evidence: map[string]any{
+				"keycloak_realm":   "example",
+				"irods_zone":       "tempZone",
+				"irods_username":   "alice",
+				"keycloak_user_id": "kc-alice",
+			},
+		}},
+	}
+
+	err := ValidateForApply(plan, ApplyValidationOptions{
+		ExpectedRealm:  "example",
+		ExpectedZone:   "tempZone",
+		ExpectedTarget: domain.SyncTargetIRODS,
+	})
+	if err != nil {
+		t.Fatalf("ValidateForApply returned error: %v", err)
+	}
+}
+
+func TestValidateForApplyAcceptsIRODSGroupAndMembershipPlan(t *testing.T) {
+	plan := domain.SyncPlan{
+		PlanFormatVersion: domain.SyncPlanFormatVersion,
+		PlanID:            "plan-test",
+		Mode:              domain.SyncPlanModeSync,
+		TargetSystem:      domain.SyncTargetIRODS,
+		Authority:         domain.SyncPlanAuthorityIRODS,
+		Realm:             "example",
+		Zone:              "tempZone",
+		Operations: []domain.PlanOperation{
+			{
+				OperationID: "op-001",
+				Action:      domain.PlanActionIRODSGroupCreate,
+				Target:      "project-alpha",
+				Risk:        "low",
+				Evidence: map[string]any{
+					"keycloak_realm":    "example",
+					"irods_zone":        "tempZone",
+					"irods_group_name":  "project-alpha",
+					"keycloak_group_id": "kc-group-alpha",
+				},
+			},
+			{
+				OperationID: "op-002",
+				Action:      domain.PlanActionIRODSGroupMemberAdd,
+				Target:      "project-alpha#member:alice",
+				Risk:        "low",
+				Evidence: map[string]any{
+					"keycloak_realm":    "example",
+					"irods_zone":        "tempZone",
+					"irods_group_name":  "project-alpha",
+					"irods_username":    "alice",
+					"keycloak_group_id": "kc-group-alpha",
+					"keycloak_user_id":  "kc-alice",
+				},
+			},
+			{
+				OperationID: "op-003",
+				Action:      domain.PlanActionIRODSGroupMemberRemove,
+				Target:      "project-alpha#member:bob",
+				Risk:        "medium",
+				Evidence: map[string]any{
+					"keycloak_realm":    "example",
+					"irods_zone":        "tempZone",
+					"irods_group_name":  "project-alpha",
+					"irods_username":    "bob",
+					"keycloak_group_id": "kc-group-alpha",
+					"keycloak_user_id":  "kc-bob",
+				},
+			},
+		},
+	}
+
+	err := ValidateForApply(plan, ApplyValidationOptions{
+		ExpectedRealm:  "example",
+		ExpectedZone:   "tempZone",
+		ExpectedTarget: domain.SyncTargetIRODS,
+	})
+	if err != nil {
+		t.Fatalf("ValidateForApply returned error: %v", err)
+	}
+
+	summary := SummaryCounts(plan)
+	if summary.CreateIRODSGroups != 1 || summary.UpdateIRODSMemberships != 2 {
+		t.Fatalf("unexpected summary counts: %+v", summary)
+	}
+}
+
+func TestValidateForApplyRejectsIRODSMembershipWithoutStableMappingEvidence(t *testing.T) {
+	plan := domain.SyncPlan{
+		PlanFormatVersion: domain.SyncPlanFormatVersion,
+		PlanID:            "plan-test",
+		Mode:              domain.SyncPlanModeSync,
+		TargetSystem:      domain.SyncTargetIRODS,
+		Authority:         domain.SyncPlanAuthorityIRODS,
+		Realm:             "example",
+		Zone:              "tempZone",
+		Operations: []domain.PlanOperation{{
+			OperationID: "op-001",
+			Action:      domain.PlanActionIRODSGroupMemberAdd,
+			Target:      "project-alpha#member:alice",
+			Risk:        "low",
+			Evidence: map[string]any{
+				"keycloak_realm":    "example",
+				"irods_zone":        "tempZone",
+				"irods_group_name":  "project-alpha",
+				"irods_username":    "alice",
+				"keycloak_group_id": "kc-group-alpha",
+			},
+		}},
+	}
+
+	err := ValidateForApply(plan, ApplyValidationOptions{
+		ExpectedRealm:  "example",
+		ExpectedZone:   "tempZone",
+		ExpectedTarget: domain.SyncTargetIRODS,
+	})
+	if err == nil || !strings.Contains(err.Error(), "keycloak_user_id evidence is required") {
+		t.Fatalf("expected missing keycloak_user_id error, got %v", err)
+	}
+}
+
+func TestValidateForApplyRejectsIRODSUserPlanForKeycloakTarget(t *testing.T) {
+	plan := validPlan()
+	plan.Operations[0] = domain.PlanOperation{
+		OperationID: "op-001",
+		Action:      domain.PlanActionIRODSUserCreate,
+		Target:      "alice",
+		Risk:        "low",
+	}
+
+	err := ValidateForApply(plan, ApplyValidationOptions{
+		ExpectedRealm:      "example",
+		ExpectedZone:       "tempZone",
+		ExpectedMirrorRoot: "/irods",
+		ExpectedTarget:     domain.SyncTargetKeycloak,
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported action") {
+		t.Fatalf("expected unsupported action error, got %v", err)
 	}
 }
 
@@ -128,7 +297,8 @@ func validPlan() domain.SyncPlan {
 	return domain.SyncPlan{
 		PlanFormatVersion:  domain.SyncPlanFormatVersion,
 		PlanID:             "plan-test",
-		Mode:               domain.SyncPlanModeRepairKeycloak,
+		Mode:               domain.SyncPlanModeSync,
+		TargetSystem:       domain.SyncTargetKeycloak,
 		Authority:          domain.SyncPlanAuthorityIRODS,
 		Realm:              "example",
 		Zone:               "tempZone",

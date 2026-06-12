@@ -35,7 +35,8 @@ func newRepairPlanner(realm string, zone string, mirrorPolicy mirrorPathPolicy, 
 		plan: domain.SyncPlan{
 			PlanFormatVersion:  domain.SyncPlanFormatVersion,
 			PlanID:             newPlanID(),
-			Mode:               domain.SyncPlanModeRepairKeycloak,
+			Mode:               domain.SyncPlanModeSync,
+			TargetSystem:       domain.SyncTargetKeycloak,
 			Authority:          domain.SyncPlanAuthorityIRODS,
 			Realm:              realm,
 			Zone:               zone,
@@ -103,6 +104,7 @@ func (p *repairPlanner) appendGroupCreate(groupName string, zone string, groupPa
 		"keycloak_realm":   p.realm,
 		"keycloak_path":    groupPath,
 	}
+	addSyncModelEvidence(evidence, domain.SyncDirectionIRODSToKeycloak, domain.SyncClassificationCandidateAddition, true)
 	p.plan.Operations = append(p.plan.Operations, newOperation(p.nextOperationID(), domain.PlanActionKeycloakGroupCreate, groupPath, "low", evidence))
 	p.plan.Summary.CreateKeycloakGroups++
 }
@@ -121,6 +123,7 @@ func (p *repairPlanner) appendMemberAdd(groupName string, irodsGroup irodsGroupS
 		"keycloak_path":    groupPath,
 	}
 	addNonEmptyEvidence(evidence, "keycloak_group_id", keycloakGroup.ID)
+	addSyncModelEvidence(evidence, domain.SyncDirectionIRODSToKeycloak, domain.SyncClassificationCandidateAddition, true)
 	p.plan.Operations = append(p.plan.Operations, newOperation(p.nextOperationID(), domain.PlanActionKeycloakGroupMemberAdd, memberTarget(groupPath, username), "low", evidence))
 	p.plan.Summary.UpdateKeycloakMemberships++
 }
@@ -136,6 +139,7 @@ func (p *repairPlanner) appendMemberRemove(groupName string, irodsGroup irodsGro
 	}
 	addNonEmptyEvidence(evidence, "keycloak_group_id", keycloakGroup.ID)
 	addNonEmptyEvidence(evidence, "keycloak_user_id", userID)
+	addSyncModelEvidence(evidence, domain.SyncDirectionIRODSToKeycloak, domain.SyncClassificationCandidateRemoval, strings.TrimSpace(userID) != "")
 	p.plan.Operations = append(p.plan.Operations, newOperation(p.nextOperationID(), domain.PlanActionKeycloakGroupMemberRemove, memberTarget(groupPath, username), "medium", evidence))
 	p.plan.Summary.UpdateKeycloakMemberships++
 }
@@ -149,6 +153,7 @@ func (p *repairPlanner) appendStaleKeycloakGroupDelete(keycloakGroup keycloakGro
 		"keycloak_path":    keycloakGroup.Path,
 	}
 	addNonEmptyEvidence(evidence, "keycloak_group_id", keycloakGroup.ID)
+	addSyncModelEvidence(evidence, domain.SyncDirectionIRODSToKeycloak, domain.SyncClassificationCandidateRemoval, strings.TrimSpace(keycloakGroup.ID) != "")
 	p.plan.Operations = append(p.plan.Operations, newOperation(p.nextOperationID(), domain.PlanActionKeycloakGroupDelete, keycloakGroup.Path, domain.PlanRiskRequiresApproval, evidence))
 	p.plan.Summary.DeleteKeycloakMirrors++
 	p.plan.Summary.RequiresApproval++
@@ -175,6 +180,14 @@ func addNonEmptyEvidence(evidence map[string]any, key string, value string) {
 	if value != "" {
 		evidence[key] = value
 	}
+}
+
+func addSyncModelEvidence(evidence map[string]any, direction string, classification string, mappingIdentityKnown bool) {
+	evidence["sync_direction"] = direction
+	evidence["sync_classification"] = classification
+	evidence["mapping_identity_known"] = mappingIdentityKnown
+	evidence["authority_role"] = "directional_repair_policy"
+	evidence["conflict_status"] = "none"
 }
 
 func newPlanID() string {

@@ -49,7 +49,7 @@ func reviewTestPlan() domain.SyncPlan {
 	return domain.SyncPlan{
 		PlanFormatVersion: domain.SyncPlanFormatVersion,
 		PlanID:            "plan-test",
-		Mode:              domain.SyncPlanModeRepairKeycloak,
+		Mode:              domain.SyncPlanModeSync,
 		Authority:         domain.SyncPlanAuthorityIRODS,
 		Realm:             "example",
 		Zone:              "tempZone",

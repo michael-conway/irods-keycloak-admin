@@ -11,9 +11,10 @@ type Comparator struct{}
 
 func (Comparator) PlanRepair(_ Snapshot, _ Snapshot) domain.SyncPlan {
 	return domain.SyncPlan{
-		Mode:       "repair-keycloak",
-		Authority:  "irods",
-		Summary:    domain.PlanSummary{},
-		Operations: []domain.PlanOperation{},
+		Mode:         "sync",
+		TargetSystem: domain.SyncTargetKeycloak,
+		Authority:    "irods",
+		Summary:      domain.PlanSummary{},
+		Operations:   []domain.PlanOperation{},
 	}
 }

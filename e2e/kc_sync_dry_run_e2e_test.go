@@ -123,7 +123,7 @@ func runKCSyncDryRun(t *testing.T, ctx context.Context, cfg Config) domain.SyncP
 	t.Helper()
 
 	args := []string{
-		"run", "./cmd/irods-kc-sync", "repair-keycloak",
+		"run", "./cmd/irods-kc-sync", "sync",
 		"--dry-run",
 		"--realm", cfg.Keycloak.Realm,
 		"--zone", cfg.IRODS.Zone,
@@ -149,14 +149,14 @@ func runKCSyncDryRun(t *testing.T, ctx context.Context, cfg Config) domain.SyncP
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("irods-kc-sync repair-keycloak --dry-run failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+		t.Fatalf("irods-kc-sync sync --dry-run failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}
 
 	var plan domain.SyncPlan
 	if err := json.Unmarshal(stdout.Bytes(), &plan); err != nil {
 		t.Fatalf("decode dry-run plan: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}
-	if plan.Mode != "repair-keycloak" || plan.Authority != "irods" || plan.Realm != cfg.Keycloak.Realm || plan.Zone != cfg.IRODS.Zone {
+	if plan.Mode != "sync" || plan.Authority != "irods" || plan.Realm != cfg.Keycloak.Realm || plan.Zone != cfg.IRODS.Zone {
 		t.Fatalf("unexpected plan metadata: %+v", plan)
 	}
 	return plan
@@ -181,6 +181,28 @@ func ensureIRODSUserExists(t *testing.T, ctx context.Context, cfg Config, userna
 	runIAdmin(t, ctx, cfg, false, "mkuser", username, "rodsuser")
 }
 
+func requireIRODSUserExists(t *testing.T, ctx context.Context, cfg Config, username string) {
+	t.Helper()
+
+	stdout, stderr, err := runIAdminOutput(ctx, cfg, "lu", username)
+	if err != nil {
+		t.Fatalf("expected iRODS user %q to exist: %v\nstdout:\n%s\nstderr:\n%s", username, err, stdout, stderr)
+	}
+	if !strings.Contains(stdout, username) {
+		t.Fatalf("iRODS user lookup did not include %q\nstdout:\n%s\nstderr:\n%s", username, stdout, stderr)
+	}
+}
+
+func cleanupIRODSUser(t *testing.T, ctx context.Context, cfg Config, username string) {
+	t.Helper()
+
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return
+	}
+	runIAdmin(t, ctx, cfg, false, "rmuser", username)
+}
+
 func cleanupIRODSGroup(t *testing.T, ctx context.Context, cfg Config, groupName string) {
 	t.Helper()
 
@@ -192,6 +214,13 @@ func cleanupIRODSGroup(t *testing.T, ctx context.Context, cfg Config, groupName 
 func runIAdmin(t *testing.T, ctx context.Context, cfg Config, requireSuccess bool, args ...string) {
 	t.Helper()
 
+	stdout, stderr, err := runIAdminOutput(ctx, cfg, args...)
+	if requireSuccess && err != nil {
+		t.Fatalf("docker iadmin %s failed: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, stdout, stderr)
+	}
+}
+
+func runIAdminOutput(ctx context.Context, cfg Config, args ...string) (string, string, error) {
 	commandArgs := append([]string{
 		"exec",
 		cfg.IRODS.ProviderContainer,
@@ -205,9 +234,7 @@ func runIAdmin(t *testing.T, ctx context.Context, cfg Config, requireSuccess boo
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	if requireSuccess && err != nil {
-		t.Fatalf("docker iadmin %s failed: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, stdout.String(), stderr.String())
-	}
+	return stdout.String(), stderr.String(), err
 }
 
 func requireOperation(t *testing.T, plan domain.SyncPlan, action string, target string) domain.PlanOperation {
@@ -345,6 +372,16 @@ func cleanupKeycloakGroup(t *testing.T, ctx context.Context, client *e2eKeycloak
 	_ = client.doJSON(ctx, http.MethodDelete, client.adminPath(cfg.Keycloak.Realm, "groups", group.ID), nil, nil)
 }
 
+func cleanupKeycloakUser(t *testing.T, ctx context.Context, client *e2eKeycloakClient, cfg Config, username string) {
+	t.Helper()
+
+	user, err := client.findUserByUsername(ctx, cfg, username)
+	if err != nil || user == nil {
+		return
+	}
+	_ = client.doJSON(ctx, http.MethodDelete, client.adminPath(cfg.Keycloak.Realm, "users", user.ID), nil, nil)
+}
+
 func cleanupKeycloakGroupsWithPrefix(t *testing.T, ctx context.Context, client *e2eKeycloakClient, cfg Config, prefix string) {
 	t.Helper()
 
@@ -357,6 +394,48 @@ func cleanupKeycloakGroupsWithPrefix(t *testing.T, ctx context.Context, client *
 			_ = client.doJSON(ctx, http.MethodDelete, client.adminPath(cfg.Keycloak.Realm, "groups", group.ID), nil, nil)
 		}
 	}
+}
+
+func (c *e2eKeycloakClient) createUser(t *testing.T, ctx context.Context, cfg Config, username string) e2eKeycloakUser {
+	t.Helper()
+
+	body := map[string]any{
+		"username": username,
+		"enabled":  true,
+	}
+	if err := c.doJSON(ctx, http.MethodPost, c.adminPath(cfg.Keycloak.Realm, "users"), body, nil); err != nil {
+		t.Fatalf("create Keycloak user %q: %v", username, err)
+	}
+	for attempt := 0; attempt < 10; attempt++ {
+		user, err := c.findUserByUsername(ctx, cfg, username)
+		if err != nil {
+			t.Fatalf("verify Keycloak user %q: %v", username, err)
+		}
+		if user != nil {
+			return *user
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("created Keycloak user %q was not found", username)
+	return e2eKeycloakUser{}
+}
+
+func (c *e2eKeycloakClient) findUserByUsername(ctx context.Context, cfg Config, username string) (*e2eKeycloakUser, error) {
+	values := url.Values{}
+	values.Set("username", username)
+	values.Set("exact", "true")
+	values.Set("max", "10")
+
+	var users []e2eKeycloakUser
+	if err := c.doJSON(ctx, http.MethodGet, c.adminPath(cfg.Keycloak.Realm, "users")+"?"+values.Encode(), nil, &users); err != nil {
+		return nil, err
+	}
+	for i := range users {
+		if users[i].Username == username {
+			return &users[i], nil
+		}
+	}
+	return nil, nil
 }
 
 func (c *e2eKeycloakClient) findMirrorGroup(ctx context.Context, cfg Config, groupName string) (*e2eKeycloakGroup, error) {

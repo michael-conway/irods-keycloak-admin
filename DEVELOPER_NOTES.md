@@ -23,85 +23,331 @@ plans derived from the larger strategy and phase plan. When the sprint changes,
 update this section first, then reconcile any stale lower-level examples in the
 rest of the document.
 
-### Sprint Plan: Repair Workflow Hardening
+Authority split:
 
-Date: 2026-06-11
+- `IRODS_KEYCLOAK_ADMINISTRATORS_GUIDE.md` is authoritative for administrator
+  user stories, scenario framing, and general operational themes.
+- `DEVELOPER_NOTES.md` is authoritative for developer execution, sprint
+  breakdown, roadmap sequencing, and implementation tactics.
+- Developer tasks should derive from administrator-guide user stories rather
+  than inventing an unrelated planning vocabulary.
+
+### Sprint Plan: Scenario 2 and 3 iRODS Mutation in Sync Operations
+
+Date: 2026-06-12
 
 Goal:
 
 ```text
-Harden the existing repair/apply vertical slice before expanding scope.
-The working center of gravity is internal/workflow/repair/service.go.
-Keep iRODS authoritative and read-only in this sprint. Improve plan quality,
-operator confidence, configurability, and failure reporting for Keycloak mirror
-repair.
+Use the administrator guide's scenario-2 and scenario-3 user stories to start
+the next execution slice: iRODS mutation in synchronization operations.
+
+This sprint should cover iRODS mutations for users, groups, and group
+membership in the synchronization toolchain.
+
+Scenario 2 is ready for user provisioning without an iRODS native-password
+lifecycle.
+Scenario 3 should support the same user/group/group-membership mutation model
+while treating password recovery as a separate credential path, with optional
+JSON password-action reporting.
 ```
 
 Resume point:
 
 ```text
-The implemented workflow is real in the CLI and repair service.
-internal/reconcile is not the active engine and should not drive sprint scope.
-Do not start bootstrap or broad API work until the current repair/apply slice
-is cleaner and more explicit.
+The repair/apply vertical slice remains stable and available as prior work.
+
+The next active execution slice is Keycloak-driven synchronization that can
+mutate iRODS users, groups, and group memberships.
+
+IRODS_KEYCLOAK_ADMINISTRATORS_GUIDE.md owns the user stories for scenarios 2
+and 3.
+DEVELOPER_NOTES.md should now translate those user stories into concrete tool
+shapes, sprint tasks, and implementation sequencing.
 ```
 
 Important boundary decisions:
 
 ```text
-irods-keycloak-admin owns orchestration and Keycloak mirror repair.
-Generic iRODS mutation remains outside this repo.
-This sprint improves plan/apply quality; it does not add iRODS write behavior.
-The CLI remains the primary execution surface while the HTTP API stays scaffolded.
+This sprint is execution-oriented, but remains tightly bounded by scenarios 2
+and 3.
+Add iRODS mutation support for users, groups, and group memberships.
+Do not collapse scenario-3 password handling into ordinary synchronization.
+Treat scenario-3 password setup/reset as a separate credential path.
+Optional password-action JSON reporting is in scope; notification delivery is
+out of scope.
+Keep roadmap, sprinting, and execution tactics in this developer guide.
 ```
 
 #### Current Sprint Tasks
 
-x1. Refactor the repair workflow into smaller helpers.
+x1. Define the first usable sync surface.
 
-- Break `internal/workflow/repair/service.go` into clearer internal helpers for
-  snapshot reads, group filtering, plan assembly, and apply execution.
-- Keep current behavior stable while making policy points easier to test and
-  reason about.
-- Prefer incremental extraction over introducing a second orchestration layer.
+- Keep the new work inside `irods-kc-sync`.
+- Treat `sync --dry-run` plus `apply --plan ...` as the baseline operational
+  model unless a narrower short-term split is required.
+- Use an explicit first-slice target selector rather than introducing a new
+  top-level command or fully mixed-system plans immediately.
+- Preferred first-slice shape:
+  `irods-kc-sync sync --dry-run --target=irods`
+  `irods-kc-sync apply --plan plan.json`
+- Keep the first implementation slice focused on Keycloak-to-iRODS mutation and
+  tested end to end.
+- Keep backward compatibility with the current Keycloak-side sync/apply slice.
 
-x2. Make Keycloak mirror root and path policy explicit.
+x2. Add iRODS mutation plan/apply support for users.
 
-- Remove hidden dependence on the hard-coded `/irods` mirror root where practical.
-- Add config-driven mirror root/path handling with stable defaults for current
-  deployments and e2e fixtures.
-- Ensure plan targets, evidence, and apply all use the same normalized path policy.
+- Plan iRODS user create/update operations from Keycloak-facing sync state.
+- Distinguish between:
+  self-service account request
+  administrator provisioning
+  synchronization of already mapped users
+- Add minimal managed/mapping AVU handling for users.
+- Keep scenario-2 and scenario-3 user mutation logic identical except for
+  credential-related behavior.
+- Current slice complete:
+  `sync --dry-run --target=irods --keycloak-user-id ...` plans user create
+  plus metadata sync operations from Keycloak state, and `apply --plan ...`
+  executes those operations against iRODS.
+- Apply validation requires `keycloak_user_id` evidence for iRODS user mutation
+  operations so user creation and metadata sync stay anchored to a stable
+  Keycloak mapping identity.
 
-x3. Improve plan evidence and review quality.
+x3. Add iRODS mutation plan/apply support for groups.
 
-- Add enough evidence to each operation for an operator to understand why the
-  change exists without re-running discovery mentally.
-- Keep operation ordering deterministic.
-- Make it obvious in the plan whether a change comes from a missing mirror
-  group, membership drift, stale Keycloak state, or mapping ambiguity.
+- Plan iRODS group create/update operations.
+- Support additive reflection of previously unmanaged iRODS groups into
+  Keycloak rather than treating them as deletion candidates by default.
+- Decide which group AVUs are mandatory versus optional in the first slice.
+- Current slice complete:
+  `sync --dry-run --target=irods --keycloak-group-id ...` and
+  `sync --dry-run --target=irods --keycloak-group-path ...` plan iRODS group
+  create plus metadata sync operations from Keycloak state, and
+  `apply --plan ...` executes those operations against iRODS.
+- Apply validation requires `keycloak_group_id` evidence for iRODS group
+  mutation operations so group creation and metadata sync stay anchored to a
+  stable Keycloak mapping identity.
+- First-slice mandatory group AVUs match the user mapping shape:
+  managed-by, Keycloak realm, Keycloak group ID, and authority.
 
-x4. Harden apply behavior and result reporting.
+x4. Add iRODS mutation plan/apply support for group membership.
 
-- Improve mutation results and warnings so partial failures are easier to audit.
-- Tighten idempotency expectations for repeat apply on converged state.
-- Make failure messages more specific around missing Keycloak users, missing
-  group IDs, path resolution, and unsupported plan content.
+- Plan add/remove operations for iRODS group membership.
+- Support administrator and delegated group-admin workflows in scope, even if
+  final authz enforcement remains scaffolded.
+- Keep membership mutation rules conservative where mapping or policy is
+  ambiguous.
+- Current slice complete:
+  selected-group `sync --dry-run --target=irods --keycloak-group-id ...` and
+  `sync --dry-run --target=irods --keycloak-group-path ...` now compare
+  Keycloak group members with iRODS group members and plan
+  `irods.group.member.add` / `irods.group.member.remove` operations.
+- Membership adds require the Keycloak member to have a stable user ID and an
+  existing iRODS user with matching Keycloak-user-ID metadata.
+- Membership removals require the iRODS group to be mapped to the selected
+  Keycloak group and the removed iRODS user to carry Keycloak-user-ID metadata.
+- Unmapped or unmanaged iRODS members are left untouched by this slice.
 
-x5. Expand edge-case coverage before widening scope.
+x5. Make the sync model explicitly bi-directional and conservative.
 
-- Add unit coverage for ambiguous Keycloak user lookup behavior, missing group
-  identifiers, mirror-path normalization, and partial apply failures.
-- Keep live e2e coverage focused on the current repair/apply slice.
-- Use tests to lock behavior before promoting the workflow into the HTTP API.
+- Treat unmatched users/groups as candidate additions before candidate removals.
+- Separate the meanings of:
+  managed
+  mapped
+  authority
+  conflict
+- Preserve authority as an optional policy knob for directional repair and
+  conflict resolution, not a universal deletion rule.
+- This sprint still implements only the `--target=irods` direction, while
+  keeping the broader bi-directional model as the intended later shape.
+- Current slice complete:
+  plan operations now expose `sync_direction`, `sync_classification`,
+  `mapping_identity_known`, `authority_role`, and `conflict_status` evidence.
+- Current classifications distinguish candidate additions, candidate removals,
+  and mapped metadata updates without treating `authority=irods` as a universal
+  deletion rule.
+- Existing `--target=keycloak` mirror repair is labeled as
+  `irods_to_keycloak` directional repair, while the new sprint work is labeled
+  `keycloak_to_irods`.
+- Ambiguous selected-group membership state remains conservative: username-only
+  Keycloak membership blocks removal of the matching iRODS member but is not
+  enough evidence to add a new iRODS membership.
 
-Success criteria:
+x6. Keep scenario 2 clean on credentials.
 
-- `repair-keycloak --dry-run` remains read-only and produces more reviewable plans.
-- `apply --plan ...` remains Keycloak-only and reports failures with better specificity.
-- Mirror root/path policy is explicit and consistently enforced.
-- Repeat apply remains safe for converged state.
-- The repair/apply slice is clean enough to reuse later from the HTTP layer
-  without first reworking the workflow again.
+- Support user provisioning without introducing an iRODS native-password
+  lifecycle.
+- Treat scenario-2 failures as user/group/membership/mapping failures, not
+  password failures.
+- Ensure scenario-2 plan/apply output does not imply native-password handling.
+- Current slice complete:
+  `--target=irods` plan operations now include `credential_policy:
+  external_authority`, `credential_action: none`, and `failure_domain:
+  identity_group_membership_mapping`.
+- Scenario-2 user creation uses ordinary iRODS user creation only; no native
+  credential setup, reset, generation, mirroring, or reporting is part of the
+  synchronization plan/apply path.
+- Apply failures in this slice remain `apply.irods.operation_failed` warnings
+  whose messages come from user, group, membership, or metadata operations.
+
+x7. Keep scenario 3 credentials on a separate path.
+
+- Do not implement password repair as ordinary synchronization.
+- Add optional JSON password-action reporting only.
+- Keep notification delivery out of scope.
+- Treat password setup/reset as a future direct Keycloak-to-iRODS credential
+  path rather than part of generic sync.
+- Current slice complete:
+  `irods-kc-sync sync --dry-run --target=irods ... --password-action-report
+  report.json` writes a separate JSON password-action report derived from the
+  sync plan.
+- The report is informational only. It does not change the sync plan, does not
+  apply credentials, does not deliver notifications, and does not include
+  password material.
+- Current report actions are:
+  `password_setup_required` for planned iRODS user creation
+  `credential_state_unknown` for existing-user metadata synchronization
+- The report records the future credential path as
+  `future_keycloak_to_irods_direct` and notification handling as
+  `out_of_scope`.
+
+x8. Add tests before widening behavior.
+
+- Add unit coverage for iRODS user plan/apply behavior.
+- Add unit coverage for iRODS group and membership plan/apply behavior.
+- Add coverage for managed/mapped/unmanaged classification.
+- Add coverage for scenario-3 password-action report generation.
+- Add focused live coverage for Keycloak-to-iRODS mutation, especially adding
+  new users to iRODS from Keycloak-facing sync state.
+- Keep e2e expansion narrow until the first iRODS mutation slice is stable.
+- Current slice complete:
+  unit coverage now covers iRODS user, group, and membership plan/apply
+  behavior; managed, mapped, unmanaged, ambiguous, and conflict classification;
+  and scenario-3 password-action report generation.
+- Focused live coverage now includes
+  `TestKCSyncApplyCreatesIRODSUserFromKeycloakE2E`, which creates a temporary
+  Keycloak user, plans `sync --dry-run --target=irods --keycloak-user-id ...`,
+  applies the generated plan, verifies the iRODS user exists, replays the plan
+  idempotently, and confirms a follow-up plan converges.
+- E2E expansion remains intentionally narrow. This slice adds live iRODS user
+  creation coverage only; live group and membership iRODS mutation coverage
+  should wait until the first iRODS mutation slice remains stable.
+
+#### Remaining Decision Points
+
+1. What should the first user-facing command shape be?
+
+- Recommended default:
+  keep everything under `irods-kc-sync`
+  use `sync --dry-run --target=irods` for the first iRODS-mutation slice
+  use `apply --plan ...` to execute them
+- Decision:
+  use an explicit target selector for the first slice rather than mixed-system
+  plans or a separate top-level command
+- Follow-on intent:
+  move toward fuller bi-directional sync later once both directions are stable
+
+2. What is the default sync stance for unmatched objects?
+
+- Recommended default:
+  bi-directional sync should be additive and linking-oriented
+- Meaning:
+  unmatched users/groups are candidate additions first
+  removals require stronger evidence, explicit policy, or review
+
+3. How should `managed`, `mapped`, and `authority` behave?
+
+- Recommended default:
+  `managed` means the toolkit may mutate the object
+  `mapped` means the correspondence is known
+  `authority` is an optional conflict-resolution or directional-repair hint
+- Open point:
+  whether any first-slice operation should still require explicit authority
+  markers before mutation
+
+4. What minimal iRODS AVUs are required in the first slice?
+
+- Recommended default for users:
+  enough AVUs to mark managed state and stable mapping identity
+- Recommended default for groups:
+  start with the smallest usable set; avoid overcommitting to group AVUs until
+  group sync behavior is stable
+- Open point:
+  whether group AVUs are required at creation time or only when ambiguity
+  exists
+
+5. How should self-service requests be represented?
+
+- Recommended default:
+  keep the request/approval concept distinct from raw synchronization
+- Open point:
+  whether the first sprint slice implements self-service as a full request
+  workflow or only as the plan/apply mechanics needed beneath it
+
+6. How should delegated group-admin behavior be represented?
+
+- Recommended default:
+  support it in the workflow model and plan semantics now
+  defer full authz enforcement to later HTTP/API work if needed
+- Open point:
+  whether the first CLI slice exposes any special group-admin-facing entrypoint
+
+7. What should the scenario-3 password-action report contain?
+
+- Recommended default:
+  JSON only
+  action-oriented states such as:
+    password_setup_required
+    password_reset_required
+    credential_state_unknown
+    password_write_path_failed
+- Open point:
+  whether the report is emitted inline with sync output, as a sibling file, or
+  as a distinct command output mode
+
+
+Current implemented target selectors:
+
+- `--keycloak-user-id` plans the selected Keycloak user into iRODS.
+- `--keycloak-group-id` plans the selected Keycloak group and conservative
+  membership drift into iRODS.
+- `--keycloak-group-path` is the path-based equivalent for selected-group
+  planning.
+- A separate `--group-plus-members` selector is not needed for the current
+  slice because selected-group planning already includes group metadata and
+  conservative membership drift.
+
+### Tool Class: Keycloak-Driven iRODS Mutation Tooling
+
+This sprint introduces a separate tool class from the existing sync
+workflow.
+
+Purpose:
+
+```text
+Allow Keycloak-facing synchronization workflows to mutate iRODS users, groups,
+and group memberships directly, while still respecting scenario-specific
+credential rules.
+```
+
+This tool class should cover:
+
+- Keycloak-driven user provisioning into iRODS
+- Keycloak-driven group provisioning into iRODS
+- Keycloak-driven group-membership mutation into iRODS
+- synchronization and review behavior for these mutations
+- optional scenario-3 password-action JSON reporting
+- an initial CLI shape based on:
+  `sync --dry-run --target=irods`
+  `apply --plan ...`
+
+This tool class should not yet cover:
+
+- direct password mirroring as ordinary sync behavior
+- in-band email delivery or notification workflows
+- broad scenario support beyond scenarios 2 and 3
+- full mixed-direction bi-directional execution in one plan/apply slice
+
 
 ---
 
@@ -732,7 +978,7 @@ Commands:
 irods-kc-sync plan
 irods-kc-sync apply
 irods-kc-sync bootstrap-keycloak
-irods-kc-sync repair-keycloak
+irods-kc-sync sync
 irods-kc-sync verify
 irods-kc-sync export
 ```
@@ -1415,7 +1661,7 @@ Representative sync plan response:
 ```json
 {
   "plan_id": "plan-2026-05-20T15:04:05Z",
-  "mode": "repair-keycloak",
+  "mode": "sync",
   "authority": "irods",
   "realm": "example",
   "zone": "tempZone",
@@ -1454,7 +1700,7 @@ Example commands:
 irods-kc-sync plan --config config.yaml --out plan.json
 irods-kc-sync apply --plan plan.json
 irods-kc-sync bootstrap-keycloak --config config.yaml
-irods-kc-sync repair-keycloak --config config.yaml
+irods-kc-sync sync --config config.yaml
 
 irods-kc-doctor check-config
 irods-kc-doctor check-mapping
@@ -1670,7 +1916,7 @@ semantics and must be invoked by Keycloak or another service, keep that API in
 irods-kc-sync plan
 irods-kc-sync apply
 irods-kc-sync bootstrap-keycloak
-irods-kc-sync repair-keycloak
+irods-kc-sync sync
 ```
 
 3. Optional doctor commands:

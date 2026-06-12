@@ -3,13 +3,33 @@ package domain
 const (
 	SyncPlanFormatVersion = "irods-keycloak-admin.sync-plan.v1"
 
-	SyncPlanModeRepairKeycloak = "repair-keycloak"
-	SyncPlanAuthorityIRODS     = "irods"
+	SyncPlanModeSync       = "sync"
+	SyncPlanAuthorityIRODS = "irods"
+	SyncTargetKeycloak     = "keycloak"
+	SyncTargetIRODS        = "irods"
+
+	SyncDirectionIRODSToKeycloak = "irods_to_keycloak"
+	SyncDirectionKeycloakToIRODS = "keycloak_to_irods"
+
+	SyncClassificationCandidateAddition = "candidate_addition"
+	SyncClassificationCandidateRemoval  = "candidate_removal"
+	SyncClassificationMappedUpdate      = "mapped_update"
+	SyncClassificationConflict          = "conflict"
+
+	SyncCredentialPolicyExternalAuthority = "external_authority"
+	SyncCredentialActionNone              = "none"
+	SyncFailureDomainIdentityMapping      = "identity_group_membership_mapping"
 
 	PlanActionKeycloakGroupCreate       = "keycloak.group.create"
 	PlanActionKeycloakGroupMemberAdd    = "keycloak.group.member.add"
 	PlanActionKeycloakGroupMemberRemove = "keycloak.group.member.remove"
 	PlanActionKeycloakGroupDelete       = "keycloak.group.delete"
+	PlanActionIRODSUserCreate           = "irods.user.create"
+	PlanActionIRODSUserMetadataSync     = "irods.user.metadata.sync"
+	PlanActionIRODSGroupCreate          = "irods.group.create"
+	PlanActionIRODSGroupMetadataSync    = "irods.group.metadata.sync"
+	PlanActionIRODSGroupMemberAdd       = "irods.group.member.add"
+	PlanActionIRODSGroupMemberRemove    = "irods.group.member.remove"
 
 	PlanRiskRequiresApproval = "requires_approval"
 )
@@ -36,6 +56,13 @@ type ProvisionUserRequest struct {
 	Attributes     map[string]string `json:"attributes,omitempty"`
 }
 
+type ProvisionGroupRequest struct {
+	RequestMetadata
+	KeycloakGroupID   string            `json:"keycloak_group_id,omitempty"`
+	KeycloakGroupPath string            `json:"keycloak_group_path,omitempty"`
+	Attributes        map[string]string `json:"attributes,omitempty"`
+}
+
 type DeprovisionUserRequest struct {
 	RequestMetadata
 	KeycloakUserID string `json:"keycloak_user_id"`
@@ -54,7 +81,8 @@ type ProvisioningDecisionRequest struct {
 
 type PlanRequest struct {
 	RequestMetadata
-	Mode string `json:"mode,omitempty"`
+	Mode         string `json:"mode,omitempty"`
+	TargetSystem string `json:"target_system,omitempty"`
 }
 
 type ApplyRequest struct {
@@ -110,6 +138,11 @@ type PlanSummary struct {
 	CreateKeycloakGroups      int `json:"create_keycloak_groups,omitempty"`
 	UpdateKeycloakMemberships int `json:"update_keycloak_memberships,omitempty"`
 	DeleteKeycloakMirrors     int `json:"delete_keycloak_mirror_groups,omitempty"`
+	CreateIRODSUsers          int `json:"create_irods_users,omitempty"`
+	UpdateIRODSUserMetadata   int `json:"update_irods_user_metadata,omitempty"`
+	CreateIRODSGroups         int `json:"create_irods_groups,omitempty"`
+	UpdateIRODSGroupMetadata  int `json:"update_irods_group_metadata,omitempty"`
+	UpdateIRODSMemberships    int `json:"update_irods_memberships,omitempty"`
 	RequiresApproval          int `json:"requires_approval,omitempty"`
 }
 
@@ -125,6 +158,7 @@ type SyncPlan struct {
 	PlanFormatVersion  string          `json:"plan_format_version"`
 	PlanID             string          `json:"plan_id"`
 	Mode               string          `json:"mode"`
+	TargetSystem       string          `json:"target_system,omitempty"`
 	Authority          string          `json:"authority"`
 	Realm              string          `json:"realm"`
 	Zone               string          `json:"zone"`
@@ -132,6 +166,25 @@ type SyncPlan struct {
 	MappingPolicyHash  string          `json:"mapping_policy_hash,omitempty"`
 	Summary            PlanSummary     `json:"summary"`
 	Operations         []PlanOperation `json:"operations"`
+}
+
+type PasswordActionReport struct {
+	ReportFormatVersion string           `json:"report_format_version"`
+	PlanID              string           `json:"plan_id"`
+	Realm               string           `json:"realm"`
+	Zone                string           `json:"zone"`
+	TargetSystem        string           `json:"target_system"`
+	Notification        string           `json:"notification"`
+	CredentialPath      string           `json:"credential_path"`
+	Actions             []PasswordAction `json:"actions"`
+	Warnings            []Warning        `json:"warnings,omitempty"`
+}
+
+type PasswordAction struct {
+	Action         string `json:"action"`
+	KeycloakUserID string `json:"keycloak_user_id,omitempty"`
+	IRODSUsername  string `json:"irods_username,omitempty"`
+	Reason         string `json:"reason"`
 }
 
 type ApplyResult struct {

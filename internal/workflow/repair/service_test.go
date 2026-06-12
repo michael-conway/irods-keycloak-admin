@@ -41,7 +41,7 @@ func TestRepairKeycloakPlansMissingMirrorGroupAndMembership(t *testing.T) {
 		t.Fatalf("RepairKeycloak returned error: %v", err)
 	}
 
-	if plan.Mode != "repair-keycloak" || plan.Authority != "irods" || plan.Realm != "example" || plan.Zone != "tempZone" {
+	if plan.Mode != "sync" || plan.Authority != "irods" || plan.Realm != "example" || plan.Zone != "tempZone" {
 		t.Fatalf("unexpected plan metadata: %+v", plan)
 	}
 	if plan.PlanFormatVersion != domain.SyncPlanFormatVersion {
@@ -63,6 +63,9 @@ func TestRepairKeycloakPlansMissingMirrorGroupAndMembership(t *testing.T) {
 	})
 	assertEvidenceValue(t, plan.Operations[0], "change_cause", "missing_mirror_group")
 	assertEvidenceValue(t, plan.Operations[1], "change_cause", "missing_mirror_group")
+	assertEvidenceValue(t, plan.Operations[0], "sync_direction", domain.SyncDirectionIRODSToKeycloak)
+	assertEvidenceValue(t, plan.Operations[0], "sync_classification", domain.SyncClassificationCandidateAddition)
+	assertEvidenceValue(t, plan.Operations[1], "sync_classification", domain.SyncClassificationCandidateAddition)
 	if keycloak.createCalls != 0 || keycloak.addMemberCalls != 0 || keycloak.removeMemberCalls != 0 || keycloak.deleteGroupCalls != 0 {
 		t.Fatalf("repair planning must not mutate Keycloak, fake calls: %+v", keycloak)
 	}
@@ -193,6 +196,10 @@ func TestRepairKeycloakPlansMembershipDriftAndStaleMirror(t *testing.T) {
 	assertEvidenceValue(t, plan.Operations[0], "keycloak_group_id", "kc-project-alpha")
 	assertEvidenceValue(t, plan.Operations[1], "keycloak_group_id", "kc-project-alpha")
 	assertEvidenceValue(t, plan.Operations[2], "keycloak_group_id", "kc-stale")
+	assertEvidenceValue(t, plan.Operations[0], "sync_classification", domain.SyncClassificationCandidateAddition)
+	assertEvidenceValue(t, plan.Operations[1], "sync_classification", domain.SyncClassificationCandidateRemoval)
+	assertEvidenceValue(t, plan.Operations[2], "sync_classification", domain.SyncClassificationCandidateRemoval)
+	assertEvidenceValue(t, plan.Operations[2], "authority_role", "directional_repair_policy")
 	if keycloak.listMembersCalls["unmanaged"] != 0 {
 		t.Fatal("unmanaged Keycloak groups should be ignored")
 	}
@@ -754,7 +761,7 @@ func testApplyPlan(operations []domain.PlanOperation) domain.SyncPlan {
 	return domain.SyncPlan{
 		PlanFormatVersion:  domain.SyncPlanFormatVersion,
 		PlanID:             "plan-test",
-		Mode:               domain.SyncPlanModeRepairKeycloak,
+		Mode:               domain.SyncPlanModeSync,
 		Authority:          domain.SyncPlanAuthorityIRODS,
 		Realm:              "example",
 		Zone:               "tempZone",

@@ -6,20 +6,27 @@
 Go toolkit for planning and applying Keycloak mirror-group repair from
 authoritative iRODS group state.
 
+See [IRODS_KEYCLOAK_ADMINISTRATORS_GUIDE.md](./IRODS_KEYCLOAK_ADMINISTRATORS_GUIDE.md) for the emerging scenario and operations guide.
+
 ## Current Status
 
-This repository is in active development. The implemented vertical slice today
-is the Keycloak mirror repair workflow:
+This repository is in active development. The implemented vertical slices today
+are Keycloak mirror repair and first-slice Keycloak-to-iRODS user, group, and
+selected-group membership mutation planning:
 
 - read iRODS groups and memberships directly through `go-irodsclient`
 - read Keycloak groups and memberships through Admin REST
 - produce a deterministic repair plan with explicit evidence
-- apply a saved plan back to Keycloak only
+- apply a saved plan back to Keycloak or iRODS, depending on plan target
 
 What is implemented now:
 
-- `irods-kc-sync repair-keycloak --dry-run`
+- `irods-kc-sync sync --dry-run`
 - `irods-kc-sync apply --plan ...`
+- explicit sync target selection via `--target` for `keycloak` or first-slice
+  `irods` user, group, and selected-group membership mutations
+- optional scenario-3 password-action JSON reporting through
+  `--password-action-report`
 - mirror root configuration via `IRODS_KC_KEYCLOAK_MIRROR_ROOT` or
   `--keycloak-mirror-root`
 - prompt policy for guarded apply operations
@@ -31,7 +38,7 @@ What is still scaffolded or reserved:
 
 - generic `plan`
 - `bootstrap-keycloak`
-- provisioning workflows
+- scenario-3 credential setup/reset execution
 - diagnostics workflows behind `irods-kc-doctor`
 - most `/admin/v1` orchestration endpoints
 
@@ -59,7 +66,7 @@ This is the only command with real workflow behavior today.
 
 Implemented subcommands:
 
-- `repair-keycloak --dry-run`
+- `sync --dry-run`
 - `apply --plan PLAN.json`
 
 Scaffolded subcommands:
@@ -67,18 +74,27 @@ Scaffolded subcommands:
 - `plan`
 - `bootstrap-keycloak`
 
-`repair-keycloak --dry-run`:
+`sync --dry-run`:
 
-- reads iRODS rods-group state for the selected zone
-- reads managed Keycloak mirror groups under the configured mirror root
+- accepts `--target keycloak|irods`
+- for `--target=keycloak`, reads iRODS rods-group state for the selected zone
+  and managed Keycloak mirror groups under the configured mirror root
+- for `--target=irods`, plans Keycloak-selected user, group, and group
+  membership mutations into iRODS
 - emits a JSON plan to stdout
 - never mutates iRODS or Keycloak
+
+Current target support:
+
+- `--target=keycloak`: implemented
+- `--target=irods`: implemented for users, groups, and selected-group
+  membership via `--keycloak-user-id`, `--keycloak-group-id`, or
+  `--keycloak-group-path`
 
 `apply --plan`:
 
 - validates a saved plan
-- applies supported operations to Keycloak only
-- never mutates iRODS
+- applies supported operations to Keycloak or iRODS based on plan target
 - supports repeat apply on already converged state
 
 Supported plan operations today:
@@ -87,6 +103,12 @@ Supported plan operations today:
 - `keycloak.group.member.add`
 - `keycloak.group.member.remove`
 - `keycloak.group.delete`
+- `irods.user.create`
+- `irods.user.metadata.sync`
+- `irods.group.create`
+- `irods.group.metadata.sync`
+- `irods.group.member.add`
+- `irods.group.member.remove`
 
 Prompt behavior for `apply` is controlled by `--prompts`:
 
@@ -128,22 +150,37 @@ Run the package tests:
 go test ./...
 ```
 
-Generate a read-only repair plan:
+Generate a read-only sync plan:
 
 ```bash
-go run ./cmd/irods-kc-sync repair-keycloak --dry-run --realm irods
+go run ./cmd/irods-kc-sync sync --dry-run --target=keycloak --realm irods
+```
+
+Generate an iRODS group and membership mutation plan from Keycloak state:
+
+```bash
+go run ./cmd/irods-kc-sync sync --dry-run --target=irods --realm irods --keycloak-group-path /projects/project-alpha
 ```
 
 Write the same plan to a file while preserving stdout JSON:
 
 ```bash
-go run ./cmd/irods-kc-sync repair-keycloak --dry-run --realm irods --out plan.json
+go run ./cmd/irods-kc-sync sync --dry-run --target=keycloak --realm irods --out plan.json
 ```
 
 `--plan-path` is accepted as an alias for `--out`. If both are supplied, they
 must match.
 
-Apply a saved plan to Keycloak:
+For scenario-3 planning, write a separate informational password-action report:
+
+```bash
+go run ./cmd/irods-kc-sync sync --dry-run --target=irods --realm irods --keycloak-user-id USER_ID --password-action-report password-actions.json
+```
+
+The report is JSON only. It does not apply credentials, repair passwords, or
+deliver notifications.
+
+Apply a saved plan to the target system encoded in the plan:
 
 ```bash
 go run ./cmd/irods-kc-sync apply --plan plan.json
@@ -179,7 +216,7 @@ Common service-level configuration:
 - `IRODS_KC_KEYCLOAK_REALM`
 - `IRODS_KC_KEYCLOAK_MIRROR_ROOT`
 
-`repair-keycloak` can connect to iRODS either with explicit connection
+`sync` can connect to iRODS either with explicit connection
 parameters or by falling back to an iCommands-compatible environment.
 
 Direct iRODS settings:
@@ -206,12 +243,12 @@ Keycloak Admin REST settings:
 - `IRODS_KC_KEYCLOAK_ADMIN_CLIENT_SECRET`
 - `IRODS_KC_KEYCLOAK_INSECURE_SKIP_VERIFY`
 
-The same values are available as CLI flags on `repair-keycloak` and `apply`.
+The same values are available as CLI flags on `sync` and `apply`.
 
 Example local dry-run invocation:
 
 ```bash
-irods-kc-sync repair-keycloak --dry-run \
+irods-kc-sync sync --dry-run \
   --realm irods \
   --keycloak-url https://127.0.0.1:8443 \
   --keycloak-admin-user admin \
@@ -222,7 +259,7 @@ irods-kc-sync repair-keycloak --dry-run \
 Example service-client invocation:
 
 ```bash
-irods-kc-sync repair-keycloak --dry-run \
+irods-kc-sync sync --dry-run \
   --realm irods \
   --keycloak-url https://keycloak.example.org \
   --keycloak-admin-realm master \
@@ -230,10 +267,12 @@ irods-kc-sync repair-keycloak --dry-run \
   --keycloak-client-secret "$IRODS_KC_KEYCLOAK_ADMIN_CLIENT_SECRET"
 ```
 
-## Repair Plan Semantics
+## Sync Plan Semantics
 
-The current repair workflow treats iRODS as the authority and Keycloak as the
-mirror target.
+Sync plans use explicit target and direction metadata. Existing Keycloak mirror
+repair is directional `irods_to_keycloak` repair. The first-slice iRODS
+mutation flow is directional `keycloak_to_irods` planning for selected users,
+groups, and group memberships.
 
 The dry-run plan:
 
@@ -241,7 +280,28 @@ The dry-run plan:
 - includes plan metadata, summary counts, and ordered operations
 - records evidence such as iRODS group name, zone, Keycloak realm, mirror path,
   and group or user identifiers when available
+- records conservative model evidence such as `sync_direction`,
+  `sync_classification`, `mapping_identity_known`, `authority_role`, and
+  `conflict_status`
+- for the current LDAP/PAM scenario-2 path, records `credential_policy:
+  external_authority`, `credential_action: none`, and `failure_domain:
+  identity_group_membership_mapping`
+- treats unmatched users, groups, and memberships as candidate additions before
+  candidate removals where the selected direction supports it
 - marks destructive stale-mirror deletes with `requires_approval`
+
+Authority is a policy hint for directional repair and conflict resolution. It
+is not treated as a universal ownership rule or as permission to delete
+unmatched objects without stronger evidence.
+
+The scenario-2 sync path does not create, reset, mirror, report, or otherwise
+manage iRODS native credentials. Credential setup/reset belongs to a separate
+scenario-3 path.
+
+The scenario-3 path currently exposes reporting only through
+`--password-action-report`. It may report `password_setup_required` or
+`credential_state_unknown`, but credential setup/reset remains a future direct
+Keycloak-to-iRODS credential path rather than ordinary synchronization.
 
 The configured mirror root defaults to `/irods`. Managed Keycloak groups are
 resolved relative to that root unless another root is provided.

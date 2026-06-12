@@ -17,6 +17,7 @@ func validateApplyPlan(syncPlan domain.SyncPlan, realm string, zone string, mirr
 		ExpectedRealm:      realm,
 		ExpectedZone:       zone,
 		ExpectedMirrorRoot: mirrorRoot,
+		ExpectedTarget:     domain.SyncTargetKeycloak,
 	})
 }
 
