@@ -40,15 +40,13 @@ func TestKCSyncApplyCreatesMirrorAndMembershipE2E(t *testing.T) {
 	requireOperation(t, plan, domain.PlanActionKeycloakGroupMemberAdd, memberTarget(cfg, groupName, cfg.IRODS.SecondaryUser))
 
 	result := runKCSyncApply(t, ctx, cfg, plan, "none", "", true)
-	if result.Status != "applied" || result.Applied != 2 || result.Failed != 0 || result.Skipped != 0 {
-		t.Fatalf("unexpected apply result: %+v", result)
-	}
+	requireApplyConvergedResult(t, result, len(plan.Operations))
 
 	group := requireMirrorGroup(t, ctx, keycloak, cfg, groupName)
 	requireGroupMember(t, ctx, keycloak, cfg, group.ID, cfg.IRODS.SecondaryUser, true)
 
 	repeat := runKCSyncApply(t, ctx, cfg, plan, "none", "", true)
-	requireApplyResult(t, repeat, "applied", 2, 0, 0)
+	requireApplyNoOpResult(t, repeat, len(plan.Operations))
 
 	after := filterPlanForGroup(t, runKCSyncDryRun(t, ctx, cfg), cfg, groupName)
 	if len(after.Operations) != 0 {
@@ -83,16 +81,14 @@ func TestKCSyncApplyRemovesStaleMembershipE2E(t *testing.T) {
 	forbidOperation(t, plan, domain.PlanActionKeycloakGroupMemberAdd, memberTarget(cfg, groupName, cfg.IRODS.SecondaryUser))
 
 	result := runKCSyncApply(t, ctx, cfg, plan, "none", "", true)
-	if result.Status != "applied" || result.Applied != 1 || result.Failed != 0 || result.Skipped != 0 {
-		t.Fatalf("unexpected apply result: %+v", result)
-	}
+	requireApplyConvergedResult(t, result, len(plan.Operations))
 
 	group = requireMirrorGroup(t, ctx, keycloak, cfg, groupName)
 	requireGroupMember(t, ctx, keycloak, cfg, group.ID, cfg.IRODS.SecondaryUser, true)
 	requireGroupMember(t, ctx, keycloak, cfg, group.ID, cfg.IRODS.PrimaryUser, false)
 
 	repeat := runKCSyncApply(t, ctx, cfg, plan, "none", "", true)
-	requireApplyResult(t, repeat, "applied", 1, 0, 0)
+	requireApplyNoOpResult(t, repeat, len(plan.Operations))
 
 	after := filterPlanForGroup(t, runKCSyncDryRun(t, ctx, cfg), cfg, groupName)
 	if len(after.Operations) != 0 {
@@ -145,7 +141,7 @@ func TestKCSyncApplyStaleMirrorDeletePromptPolicyE2E(t *testing.T) {
 	}
 
 	repeat := runKCSyncApply(t, ctx, cfg, plan, "required", "a\n", true)
-	requireApplyResult(t, repeat, "applied", 1, 0, 0)
+	requireApplyNoOpResult(t, repeat, len(plan.Operations))
 
 	after := filterPlanForGroup(t, runKCSyncDryRun(t, ctx, cfg), cfg, groupName)
 	if len(after.Operations) != 0 {
@@ -158,6 +154,31 @@ func requireApplyResult(t *testing.T, result domain.ApplyResult, status string, 
 
 	if result.Status != status || result.Applied != applied || result.Skipped != skipped || result.Failed != failed {
 		t.Fatalf("unexpected apply result: want status=%s applied=%d skipped=%d failed=%d got %+v", status, applied, skipped, failed, result)
+	}
+}
+
+func requireApplyConvergedResult(t *testing.T, result domain.ApplyResult, operationCount int) {
+	t.Helper()
+
+	if result.Failed != 0 {
+		t.Fatalf("unexpected apply failures: %+v", result)
+	}
+	if result.Applied+result.Skipped != operationCount {
+		t.Fatalf("unexpected apply accounting: want operations=%d got %+v", operationCount, result)
+	}
+	if result.Status != "applied" && result.Status != "skipped" {
+		t.Fatalf("unexpected apply status for converged result: %+v", result)
+	}
+}
+
+func requireApplyNoOpResult(t *testing.T, result domain.ApplyResult, operationCount int) {
+	t.Helper()
+
+	requireApplyResult(t, result, "skipped", 0, operationCount, 0)
+	for _, operation := range result.Operations {
+		if operation.Status != "unchanged" && operation.Status != "skipped" {
+			t.Fatalf("expected repeat apply to be unchanged or skipped, got %+v", result.Operations)
+		}
 	}
 }
 

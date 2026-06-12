@@ -283,46 +283,131 @@ func TestHTTPClientGroupAndMembershipMutationsAreIdempotent(t *testing.T) {
 			"authority":        {"irods"},
 		},
 	}
-	if created, err := client.CreateOrUpdateGroup(context.Background(), "irods", group); err != nil {
+	if created, outcome, err := client.CreateOrUpdateGroup(context.Background(), "irods", group); err != nil {
 		t.Fatalf("CreateOrUpdateGroup create returned error: %v", err)
+	} else if outcome != MutationOutcomeCreated {
+		t.Fatalf("unexpected create outcome: %s", outcome)
 	} else if created.ID != "project-id" {
 		t.Fatalf("unexpected created group: %+v", created)
 	}
-	if _, err := client.CreateOrUpdateGroup(context.Background(), "irods", group); err != nil {
+	if _, outcome, err := client.CreateOrUpdateGroup(context.Background(), "irods", group); err != nil {
 		t.Fatalf("CreateOrUpdateGroup update returned error: %v", err)
+	} else if outcome != MutationOutcomeUnchanged {
+		t.Fatalf("unexpected update outcome: %s", outcome)
 	}
-	if createGroupCalls != 1 || updateGroupCalls != 1 {
+	if createGroupCalls != 1 || updateGroupCalls != 0 {
 		t.Fatalf("unexpected group mutation calls: create=%d update=%d", createGroupCalls, updateGroupCalls)
 	}
 
-	if err := client.AddUserToGroup(context.Background(), "irods", "alice", "/irods/project-alpha"); err != nil {
+	if outcome, err := client.AddUserToGroup(context.Background(), "irods", "alice", "/irods/project-alpha"); err != nil {
 		t.Fatalf("AddUserToGroup returned error: %v", err)
+	} else if outcome != MutationOutcomeUpdated {
+		t.Fatalf("unexpected add outcome: %s", outcome)
 	}
-	if err := client.AddUserToGroup(context.Background(), "irods", "alice", "/irods/project-alpha"); err != nil {
+	if outcome, err := client.AddUserToGroup(context.Background(), "irods", "alice", "/irods/project-alpha"); err != nil {
 		t.Fatalf("repeat AddUserToGroup returned error: %v", err)
+	} else if outcome != MutationOutcomeUnchanged {
+		t.Fatalf("unexpected repeat add outcome: %s", outcome)
 	}
 	if addMemberCalls != 1 {
 		t.Fatalf("expected idempotent add member, got %d calls", addMemberCalls)
 	}
 
-	if err := client.RemoveUserFromGroup(context.Background(), "irods", "alice", "/irods/project-alpha"); err != nil {
+	if outcome, err := client.RemoveUserFromGroup(context.Background(), "irods", "alice", "/irods/project-alpha"); err != nil {
 		t.Fatalf("RemoveUserFromGroup returned error: %v", err)
+	} else if outcome != MutationOutcomeUpdated {
+		t.Fatalf("unexpected remove outcome: %s", outcome)
 	}
-	if err := client.RemoveUserFromGroup(context.Background(), "irods", "alice", "/irods/project-alpha"); err != nil {
+	if outcome, err := client.RemoveUserFromGroup(context.Background(), "irods", "alice", "/irods/project-alpha"); err != nil {
 		t.Fatalf("repeat RemoveUserFromGroup returned error: %v", err)
+	} else if outcome != MutationOutcomeUnchanged {
+		t.Fatalf("unexpected repeat remove outcome: %s", outcome)
 	}
 	if removeMemberCalls != 1 {
 		t.Fatalf("expected idempotent remove member, got %d calls", removeMemberCalls)
 	}
 
-	if err := client.DeleteGroup(context.Background(), "irods", "/irods/project-alpha"); err != nil {
+	if outcome, err := client.DeleteGroup(context.Background(), "irods", "/irods/project-alpha"); err != nil {
 		t.Fatalf("DeleteGroup returned error: %v", err)
+	} else if outcome != MutationOutcomeDeleted {
+		t.Fatalf("unexpected delete outcome: %s", outcome)
 	}
-	if err := client.DeleteGroup(context.Background(), "irods", "/irods/project-alpha"); err != nil {
+	if outcome, err := client.DeleteGroup(context.Background(), "irods", "/irods/project-alpha"); err != nil {
 		t.Fatalf("repeat DeleteGroup returned error: %v", err)
+	} else if outcome != MutationOutcomeUnchanged {
+		t.Fatalf("unexpected repeat delete outcome: %s", outcome)
 	}
 	if deleteGroupCalls != 1 {
 		t.Fatalf("expected idempotent delete group, got %d calls", deleteGroupCalls)
+	}
+}
+
+func TestHTTPClientResolveUserIDPrefersExactUsernameBeforeIDLookup(t *testing.T) {
+	var getUserCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/realms/master/protocol/openid-connect/token":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "token",
+				"expires_in":   300,
+			})
+		case "/admin/realms/irods/users":
+			if got := r.URL.Query().Get("username"); got != "shared-ref" {
+				t.Fatalf("unexpected username query: %q", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": "user-by-username", "username": "shared-ref"},
+			})
+		case "/admin/realms/irods/users/shared-ref":
+			getUserCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":       "shared-ref",
+				"username": "different-user",
+			})
+		case "/admin/realms/irods/groups":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"id":            "root-id",
+					"name":          "irods",
+					"path":          "/irods",
+					"subGroupCount": 1,
+					"subGroups":     []map[string]any{},
+				},
+			})
+		case "/admin/realms/irods/groups/root-id/children":
+			_ = json.NewEncoder(w).Encode([]map[string]any{projectAlphaGroupResponse()})
+		case "/admin/realms/irods/groups/project-id/children":
+			_ = json.NewEncoder(w).Encode([]map[string]any{})
+		case "/admin/realms/irods/groups/project-id/members":
+			_ = json.NewEncoder(w).Encode([]map[string]any{})
+		case "/admin/realms/irods/users/user-by-username/groups/project-id":
+			if r.Method != http.MethodPut {
+				t.Fatalf("unexpected membership method: %s", r.Method)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(HTTPClientConfig{
+		BaseURL:  server.URL,
+		Username: "admin",
+		Password: "admin",
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPClient returned error: %v", err)
+	}
+
+	if outcome, err := client.AddUserToGroup(context.Background(), "irods", "shared-ref", "/irods/project-alpha"); err != nil {
+		t.Fatalf("AddUserToGroup returned error: %v", err)
+	} else if outcome != MutationOutcomeUpdated {
+		t.Fatalf("unexpected add outcome: %s", outcome)
+	}
+	if getUserCalls != 0 {
+		t.Fatalf("expected exact username match to win before id lookup, got %d id lookups", getUserCalls)
 	}
 }
 

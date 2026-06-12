@@ -72,7 +72,7 @@ x2. Make Keycloak mirror root and path policy explicit.
   deployments and e2e fixtures.
 - Ensure plan targets, evidence, and apply all use the same normalized path policy.
 
-3. Improve plan evidence and review quality.
+x3. Improve plan evidence and review quality.
 
 - Add enough evidence to each operation for an operator to understand why the
   change exists without re-running discovery mentally.
@@ -80,14 +80,14 @@ x2. Make Keycloak mirror root and path policy explicit.
 - Make it obvious in the plan whether a change comes from a missing mirror
   group, membership drift, stale Keycloak state, or mapping ambiguity.
 
-4. Harden apply behavior and result reporting.
+x4. Harden apply behavior and result reporting.
 
 - Improve mutation results and warnings so partial failures are easier to audit.
 - Tighten idempotency expectations for repeat apply on converged state.
 - Make failure messages more specific around missing Keycloak users, missing
   group IDs, path resolution, and unsupported plan content.
 
-5. Expand edge-case coverage before widening scope.
+x5. Expand edge-case coverage before widening scope.
 
 - Add unit coverage for ambiguous Keycloak user lookup behavior, missing group
   identifiers, mirror-path normalization, and partial apply failures.

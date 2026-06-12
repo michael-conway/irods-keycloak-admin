@@ -317,7 +317,7 @@ func TestApplyKeycloakRepairPlanMutatesOnlyKeycloak(t *testing.T) {
 	if len(keycloak.addMemberRequests) != 1 || keycloak.addMemberRequests[0] != "example|alice|/irods/project-alpha" {
 		t.Fatalf("unexpected add member requests: %+v", keycloak.addMemberRequests)
 	}
-	if len(keycloak.removeMemberRequests) != 1 || keycloak.removeMemberRequests[0] != "example|kc-bob|kc-project-alpha" {
+	if len(keycloak.removeMemberRequests) != 1 || keycloak.removeMemberRequests[0] != "example|kc-bob|/irods/project-alpha" {
 		t.Fatalf("unexpected remove member requests: %+v", keycloak.removeMemberRequests)
 	}
 	if keycloak.deleteGroupCalls != 0 {
@@ -445,8 +445,218 @@ func TestApplyDeletesMirrorWhenPromptsNone(t *testing.T) {
 	if result.Status != "applied" || result.Applied != 1 || result.Failed != 0 {
 		t.Fatalf("unexpected apply result: %+v", result)
 	}
-	if len(keycloak.deleteGroupRequests) != 1 || keycloak.deleteGroupRequests[0] != "example|kc-stale" {
+	if len(keycloak.deleteGroupRequests) != 1 || keycloak.deleteGroupRequests[0] != "example|/irods/stale-team" {
 		t.Fatalf("unexpected delete requests: %+v", keycloak.deleteGroupRequests)
+	}
+}
+
+func TestApplyMarksConvergedOperationsUnchanged(t *testing.T) {
+	keycloak := &fakeKeycloakClient{
+		createGroupOutcome: keycloakadmin.MutationOutcomeUnchanged,
+	}
+	service := Service{Keycloak: keycloak}
+	plan := testApplyPlan([]domain.PlanOperation{{
+		OperationID: "op-001",
+		Action:      domain.PlanActionKeycloakGroupCreate,
+		Target:      "/irods/project-alpha",
+		Risk:        "low",
+		Evidence: map[string]any{
+			"irods_group_name": "project-alpha",
+			"irods_zone":       "tempZone",
+			"keycloak_realm":   "example",
+			"keycloak_path":    "/irods/project-alpha",
+		},
+	}})
+
+	result, err := service.Apply(context.Background(), domain.ApplyRequest{
+		RequestMetadata: domain.RequestMetadata{Realm: "example", Zone: "tempZone"},
+		Plan:            &plan,
+	})
+	if err != nil {
+		t.Fatalf("Apply returned error: %v", err)
+	}
+	if result.Status != "skipped" || result.Applied != 0 || result.Skipped != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected apply result: %+v", result)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Status != "unchanged" {
+		t.Fatalf("unexpected operation results: %+v", result.Operations)
+	}
+}
+
+func TestApplyReportsSpecificUserNotFoundFailure(t *testing.T) {
+	keycloak := &fakeKeycloakClient{
+		addMemberErr: &keycloakadmin.UserNotFoundError{Realm: "example", Ref: "alice"},
+	}
+	service := Service{Keycloak: keycloak}
+	plan := testApplyPlan([]domain.PlanOperation{{
+		OperationID: "op-001",
+		Action:      domain.PlanActionKeycloakGroupMemberAdd,
+		Target:      "/irods/project-alpha#member:alice",
+		Risk:        "low",
+		Evidence: map[string]any{
+			"irods_group_name": "project-alpha",
+			"irods_username":   "alice",
+			"irods_zone":       "tempZone",
+			"keycloak_realm":   "example",
+			"keycloak_path":    "/irods/project-alpha",
+		},
+	}})
+
+	result, err := service.Apply(context.Background(), domain.ApplyRequest{
+		RequestMetadata: domain.RequestMetadata{Realm: "example", Zone: "tempZone"},
+		Plan:            &plan,
+	})
+	if err != nil {
+		t.Fatalf("Apply returned error: %v", err)
+	}
+	if result.Status != "failed" || result.Applied != 0 || result.Failed != 1 {
+		t.Fatalf("unexpected apply result: %+v", result)
+	}
+	if len(result.Operations) != 1 || len(result.Operations[0].Warnings) != 1 {
+		t.Fatalf("unexpected operation warnings: %+v", result.Operations)
+	}
+	if result.Operations[0].Warnings[0].Code != "apply.keycloak.user_not_found" {
+		t.Fatalf("unexpected warning code: %+v", result.Operations[0].Warnings)
+	}
+}
+
+func TestApplyReportsSpecificGroupNotFoundFailure(t *testing.T) {
+	keycloak := &fakeKeycloakClient{
+		addMemberErr: &keycloakadmin.GroupNotFoundError{Realm: "example", Ref: "/irods/project-alpha"},
+	}
+	service := Service{Keycloak: keycloak}
+	plan := testApplyPlan([]domain.PlanOperation{{
+		OperationID: "op-001",
+		Action:      domain.PlanActionKeycloakGroupMemberAdd,
+		Target:      "/irods/project-alpha#member:alice",
+		Risk:        "low",
+		Evidence: map[string]any{
+			"irods_group_name": "project-alpha",
+			"irods_username":   "alice",
+			"irods_zone":       "tempZone",
+			"keycloak_realm":   "example",
+			"keycloak_path":    "/irods/project-alpha",
+		},
+	}})
+
+	result, err := service.Apply(context.Background(), domain.ApplyRequest{
+		RequestMetadata: domain.RequestMetadata{Realm: "example", Zone: "tempZone"},
+		Plan:            &plan,
+	})
+	if err != nil {
+		t.Fatalf("Apply returned error: %v", err)
+	}
+	if result.Status != "failed" || result.Applied != 0 || result.Failed != 1 {
+		t.Fatalf("unexpected apply result: %+v", result)
+	}
+	if result.Operations[0].Warnings[0].Code != "apply.keycloak.group_not_found" {
+		t.Fatalf("unexpected warning code: %+v", result.Operations[0].Warnings)
+	}
+}
+
+func TestApplyUsesPathFallbackWhenGroupIDEvidenceMissing(t *testing.T) {
+	keycloak := &fakeKeycloakClient{}
+	service := Service{Keycloak: keycloak}
+	plan := testApplyPlan([]domain.PlanOperation{{
+		OperationID: "op-001",
+		Action:      domain.PlanActionKeycloakGroupMemberRemove,
+		Target:      "/irods/project-alpha#member:bob",
+		Risk:        "medium",
+		Evidence: map[string]any{
+			"irods_group_name": "project-alpha",
+			"keycloak_user":    "bob",
+			"keycloak_user_id": "kc-bob",
+			"irods_zone":       "tempZone",
+			"keycloak_realm":   "example",
+			"keycloak_path":    "/irods/project-alpha",
+		},
+	}})
+
+	result, err := service.Apply(context.Background(), domain.ApplyRequest{
+		RequestMetadata: domain.RequestMetadata{Realm: "example", Zone: "tempZone"},
+		Plan:            &plan,
+	})
+	if err != nil {
+		t.Fatalf("Apply returned error: %v", err)
+	}
+	if result.Status != "applied" || result.Applied != 1 {
+		t.Fatalf("unexpected apply result: %+v", result)
+	}
+	if len(keycloak.removeMemberRequests) != 1 || keycloak.removeMemberRequests[0] != "example|kc-bob|/irods/project-alpha" {
+		t.Fatalf("unexpected remove member requests: %+v", keycloak.removeMemberRequests)
+	}
+}
+
+func TestApplyReportsPartialFailureAcrossOperations(t *testing.T) {
+	keycloak := &fakeKeycloakClient{
+		addMemberErr: &keycloakadmin.UserNotFoundError{Realm: "example", Ref: "alice"},
+	}
+	service := Service{Keycloak: keycloak}
+	plan := testApplyPlan([]domain.PlanOperation{
+		{
+			OperationID: "op-001",
+			Action:      domain.PlanActionKeycloakGroupCreate,
+			Target:      "/irods/project-alpha",
+			Risk:        "low",
+			Evidence: map[string]any{
+				"irods_group_name": "project-alpha",
+				"irods_zone":       "tempZone",
+				"keycloak_realm":   "example",
+				"keycloak_path":    "/irods/project-alpha",
+			},
+		},
+		{
+			OperationID: "op-002",
+			Action:      domain.PlanActionKeycloakGroupMemberAdd,
+			Target:      "/irods/project-alpha#member:alice",
+			Risk:        "low",
+			Evidence: map[string]any{
+				"irods_group_name": "project-alpha",
+				"irods_username":   "alice",
+				"irods_zone":       "tempZone",
+				"keycloak_realm":   "example",
+				"keycloak_path":    "/irods/project-alpha",
+			},
+		},
+	})
+
+	result, err := service.Apply(context.Background(), domain.ApplyRequest{
+		RequestMetadata: domain.RequestMetadata{Realm: "example", Zone: "tempZone"},
+		Plan:            &plan,
+	})
+	if err != nil {
+		t.Fatalf("Apply returned error: %v", err)
+	}
+	if result.Status != "failed" || result.Applied != 1 || result.Failed != 1 || result.Skipped != 0 || result.WarningCount != 1 {
+		t.Fatalf("unexpected apply result: %+v", result)
+	}
+	if len(result.Operations) != 2 {
+		t.Fatalf("unexpected operation results: %+v", result.Operations)
+	}
+	if result.Operations[0].Status != "applied" || result.Operations[1].Status != "failed" {
+		t.Fatalf("unexpected operation statuses: %+v", result.Operations)
+	}
+	if result.Operations[1].Warnings[0].Code != "apply.keycloak.user_not_found" {
+		t.Fatalf("unexpected failed operation warning: %+v", result.Operations[1].Warnings)
+	}
+}
+
+func TestApplyReportsUnsupportedOperationSpecifically(t *testing.T) {
+	keycloak := &fakeKeycloakClient{}
+	service := Service{Keycloak: keycloak}
+	plan := testApplyPlan([]domain.PlanOperation{{
+		OperationID: "op-001",
+		Action:      "keycloak.group.rename",
+		Target:      "/irods/project-alpha",
+		Risk:        "low",
+	}})
+
+	_, err := service.Apply(context.Background(), domain.ApplyRequest{
+		RequestMetadata: domain.RequestMetadata{Realm: "example", Zone: "tempZone"},
+		Plan:            &plan,
+	})
+	if err == nil || !strings.Contains(err.Error(), `unsupported action "keycloak.group.rename"`) {
+		t.Fatalf("expected unsupported operation validation error, got %v", err)
 	}
 }
 
@@ -643,12 +853,20 @@ type fakeKeycloakClient struct {
 	listMembersCalls     map[string]int
 	createCalls          int
 	createdGroups        []keycloakadmin.Group
+	createGroupOutcome   keycloakadmin.MutationOutcome
+	createGroupErr       error
 	addMemberCalls       int
 	addMemberRequests    []string
+	addMemberOutcome     keycloakadmin.MutationOutcome
+	addMemberErr         error
 	removeMemberCalls    int
 	removeMemberRequests []string
+	removeMemberOutcome  keycloakadmin.MutationOutcome
+	removeMemberErr      error
 	deleteGroupCalls     int
 	deleteGroupRequests  []string
+	deleteGroupOutcome   keycloakadmin.MutationOutcome
+	deleteGroupErr       error
 }
 
 type fakePlanReviewer struct {
@@ -690,26 +908,50 @@ func (f *fakeKeycloakClient) CreateOrUpdateUser(context.Context, string, keycloa
 	return nil, nil
 }
 
-func (f *fakeKeycloakClient) CreateOrUpdateGroup(_ context.Context, _ string, group keycloakadmin.Group) (*keycloakadmin.Group, error) {
+func (f *fakeKeycloakClient) CreateOrUpdateGroup(_ context.Context, _ string, group keycloakadmin.Group) (*keycloakadmin.Group, keycloakadmin.MutationOutcome, error) {
 	f.createCalls++
 	f.createdGroups = append(f.createdGroups, group)
-	return &group, nil
+	if f.createGroupErr != nil {
+		return nil, "", f.createGroupErr
+	}
+	if f.createGroupOutcome == "" {
+		f.createGroupOutcome = keycloakadmin.MutationOutcomeUpdated
+	}
+	return &group, f.createGroupOutcome, nil
 }
 
-func (f *fakeKeycloakClient) DeleteGroup(_ context.Context, realm string, groupIDOrPath string) error {
+func (f *fakeKeycloakClient) DeleteGroup(_ context.Context, realm string, groupIDOrPath string) (keycloakadmin.MutationOutcome, error) {
 	f.deleteGroupCalls++
 	f.deleteGroupRequests = append(f.deleteGroupRequests, realm+"|"+groupIDOrPath)
-	return nil
+	if f.deleteGroupErr != nil {
+		return "", f.deleteGroupErr
+	}
+	if f.deleteGroupOutcome == "" {
+		f.deleteGroupOutcome = keycloakadmin.MutationOutcomeDeleted
+	}
+	return f.deleteGroupOutcome, nil
 }
 
-func (f *fakeKeycloakClient) AddUserToGroup(_ context.Context, realm string, userIDOrUsername string, groupIDOrPath string) error {
+func (f *fakeKeycloakClient) AddUserToGroup(_ context.Context, realm string, userIDOrUsername string, groupIDOrPath string) (keycloakadmin.MutationOutcome, error) {
 	f.addMemberCalls++
 	f.addMemberRequests = append(f.addMemberRequests, realm+"|"+userIDOrUsername+"|"+groupIDOrPath)
-	return nil
+	if f.addMemberErr != nil {
+		return "", f.addMemberErr
+	}
+	if f.addMemberOutcome == "" {
+		f.addMemberOutcome = keycloakadmin.MutationOutcomeUpdated
+	}
+	return f.addMemberOutcome, nil
 }
 
-func (f *fakeKeycloakClient) RemoveUserFromGroup(_ context.Context, realm string, userIDOrUsername string, groupIDOrPath string) error {
+func (f *fakeKeycloakClient) RemoveUserFromGroup(_ context.Context, realm string, userIDOrUsername string, groupIDOrPath string) (keycloakadmin.MutationOutcome, error) {
 	f.removeMemberCalls++
 	f.removeMemberRequests = append(f.removeMemberRequests, realm+"|"+userIDOrUsername+"|"+groupIDOrPath)
-	return nil
+	if f.removeMemberErr != nil {
+		return "", f.removeMemberErr
+	}
+	if f.removeMemberOutcome == "" {
+		f.removeMemberOutcome = keycloakadmin.MutationOutcomeUpdated
+	}
+	return f.removeMemberOutcome, nil
 }

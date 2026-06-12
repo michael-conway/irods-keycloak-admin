@@ -2,6 +2,7 @@ package repair
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -27,19 +28,19 @@ func (s *Service) applyPlan(ctx context.Context, syncPlan domain.SyncPlan, revie
 	}
 
 	for _, operation := range syncPlan.Operations {
-		mutation, skipped, err := s.applyReviewedOperation(ctx, syncPlan, operation, reviewSession)
+		mutation, disposition, err := s.applyReviewedOperation(ctx, syncPlan, operation, reviewSession)
 		if err != nil {
 			return domain.ApplyResult{}, err
 		}
-		if skipped {
+		switch disposition {
+		case "skipped", "unchanged":
 			result.Skipped++
 			result.Operations = append(result.Operations, mutation)
 			continue
-		}
-		if len(mutation.Warnings) > 0 {
+		case "failed":
 			result.Failed++
 			result.Warnings = append(result.Warnings, mutation.Warnings...)
-		} else {
+		case "applied":
 			result.Applied++
 		}
 		result.Operations = append(result.Operations, mutation)
@@ -49,59 +50,61 @@ func (s *Service) applyPlan(ctx context.Context, syncPlan domain.SyncPlan, revie
 	return result, nil
 }
 
-func (s *Service) applyReviewedOperation(ctx context.Context, syncPlan domain.SyncPlan, operation domain.PlanOperation, reviewSession *planreview.Session) (domain.MutationResult, bool, error) {
+func (s *Service) applyReviewedOperation(ctx context.Context, syncPlan domain.SyncPlan, operation domain.PlanOperation, reviewSession *planreview.Session) (domain.MutationResult, string, error) {
 	mutation := newMutationResult(syncPlan, operation)
 	decision, err := reviewSession.Decide(ctx, syncPlan, operation)
 	if err != nil {
-		return domain.MutationResult{}, false, err
+		return domain.MutationResult{}, "", err
 	}
 	if decision == planreview.DecisionSkip {
 		markMutationStatus(&mutation, "skipped")
-		return mutation, true, nil
+		return mutation, "skipped", nil
 	}
 
-	if err := s.applyOperation(ctx, syncPlan, operation); err != nil {
+	outcome, err := s.applyOperation(ctx, syncPlan, operation)
+	if err != nil {
 		markMutationStatus(&mutation, "failed")
-		mutation.Warnings = append(mutation.Warnings, domain.Warning{
-			Code:    "apply.operation_failed",
-			Message: err.Error(),
-		})
-		return mutation, false, nil
+		mutation.Warnings = append(mutation.Warnings, classifyApplyWarning(err))
+		return mutation, "failed", nil
+	}
+	if outcome == keycloakadmin.MutationOutcomeUnchanged {
+		markMutationStatus(&mutation, "unchanged")
+		return mutation, "unchanged", nil
 	}
 
 	markMutationStatus(&mutation, "applied")
-	return mutation, false, nil
+	return mutation, "applied", nil
 }
 
-func (s *Service) applyOperation(ctx context.Context, syncPlan domain.SyncPlan, operation domain.PlanOperation) error {
+func (s *Service) applyOperation(ctx context.Context, syncPlan domain.SyncPlan, operation domain.PlanOperation) (keycloakadmin.MutationOutcome, error) {
 	switch operation.Action {
 	case domain.PlanActionKeycloakGroupCreate:
 		group, err := keycloakGroupForCreate(syncPlan, operation)
 		if err != nil {
-			return err
+			return "", err
 		}
-		_, err = s.Keycloak.CreateOrUpdateGroup(ctx, syncPlan.Realm, group)
-		return err
+		_, outcome, err := s.Keycloak.CreateOrUpdateGroup(ctx, syncPlan.Realm, group)
+		return outcome, err
 	case domain.PlanActionKeycloakGroupMemberAdd:
 		groupRef, userRef, err := keycloakMemberAddRefs(operation)
 		if err != nil {
-			return err
+			return "", err
 		}
 		return s.Keycloak.AddUserToGroup(ctx, syncPlan.Realm, userRef, groupRef)
 	case domain.PlanActionKeycloakGroupMemberRemove:
 		groupRef, userRef, err := keycloakMemberRemoveRefs(operation)
 		if err != nil {
-			return err
+			return "", err
 		}
 		return s.Keycloak.RemoveUserFromGroup(ctx, syncPlan.Realm, userRef, groupRef)
 	case domain.PlanActionKeycloakGroupDelete:
 		groupRef, err := keycloakDeleteRef(operation)
 		if err != nil {
-			return err
+			return "", err
 		}
 		return s.Keycloak.DeleteGroup(ctx, syncPlan.Realm, groupRef)
 	default:
-		return fmt.Errorf("unsupported operation action %q", operation.Action)
+		return "", fmt.Errorf("unsupported operation action %q", operation.Action)
 	}
 }
 
@@ -134,7 +137,7 @@ func keycloakMemberAddRefs(operation domain.PlanOperation) (string, string, erro
 	if err != nil {
 		return "", "", err
 	}
-	groupRef := firstNonEmpty(planvalidator.EvidenceString(operation, "keycloak_group_id"), groupPath)
+	groupRef := firstNonEmpty(groupPath, planvalidator.EvidenceString(operation, "keycloak_group_id"))
 	return groupRef, username, nil
 }
 
@@ -143,7 +146,7 @@ func keycloakMemberRemoveRefs(operation domain.PlanOperation) (string, string, e
 	if err != nil {
 		return "", "", err
 	}
-	groupRef := firstNonEmpty(planvalidator.EvidenceString(operation, "keycloak_group_id"), groupPath)
+	groupRef := firstNonEmpty(groupPath, planvalidator.EvidenceString(operation, "keycloak_group_id"))
 	userRef := firstNonEmpty(planvalidator.EvidenceString(operation, "keycloak_user_id"), planvalidator.EvidenceString(operation, "keycloak_user"), username)
 	return groupRef, userRef, nil
 }
@@ -153,7 +156,7 @@ func keycloakDeleteRef(operation domain.PlanOperation) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return firstNonEmpty(planvalidator.EvidenceString(operation, "keycloak_group_id"), groupPath), nil
+	return firstNonEmpty(groupPath, planvalidator.EvidenceString(operation, "keycloak_group_id")), nil
 }
 
 func newApplyResult(syncPlan domain.SyncPlan) domain.ApplyResult {
@@ -177,6 +180,28 @@ func finalizeApplyResult(result *domain.ApplyResult) {
 	if result.Applied == 0 && result.Skipped > 0 {
 		result.Status = "skipped"
 	}
+}
+
+func classifyApplyWarning(err error) domain.Warning {
+	var groupNotFound *keycloakadmin.GroupNotFoundError
+	if errors.As(err, &groupNotFound) {
+		return domain.Warning{Code: "apply.keycloak.group_not_found", Message: err.Error()}
+	}
+	var userNotFound *keycloakadmin.UserNotFoundError
+	if errors.As(err, &userNotFound) {
+		return domain.Warning{Code: "apply.keycloak.user_not_found", Message: err.Error()}
+	}
+	if strings.Contains(err.Error(), "unsupported operation action") {
+		return domain.Warning{Code: "apply.plan.unsupported_operation", Message: err.Error()}
+	}
+	if strings.Contains(err.Error(), "target") || strings.Contains(err.Error(), "member target") || strings.Contains(err.Error(), "group target") {
+		return domain.Warning{Code: "apply.plan.invalid_operation", Message: err.Error()}
+	}
+	var statusErr *keycloakadmin.StatusError
+	if errors.As(err, &statusErr) {
+		return domain.Warning{Code: "apply.keycloak.request_failed", Message: err.Error()}
+	}
+	return domain.Warning{Code: "apply.operation_failed", Message: err.Error()}
 }
 
 func newMutationResult(syncPlan domain.SyncPlan, operation domain.PlanOperation) domain.MutationResult {

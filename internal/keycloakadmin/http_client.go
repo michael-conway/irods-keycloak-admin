@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	pathpkg "path"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -233,10 +234,10 @@ func (c *HTTPClient) CreateOrUpdateUser(ctx context.Context, realm string, user 
 	return &user, nil
 }
 
-func (c *HTTPClient) CreateOrUpdateGroup(ctx context.Context, realm string, group Group) (*Group, error) {
+func (c *HTTPClient) CreateOrUpdateGroup(ctx context.Context, realm string, group Group) (*Group, MutationOutcome, error) {
 	groupPath, err := normalizeGroupPath(group)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	groupName := strings.TrimSpace(group.Name)
 	if groupName == "" {
@@ -245,12 +246,15 @@ func (c *HTTPClient) CreateOrUpdateGroup(ctx context.Context, realm string, grou
 
 	existing, err := c.findGroupByPath(ctx, realm, groupPath)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if existing != nil {
 		attributes := group.Attributes
 		if attributes == nil {
 			attributes = existing.Attributes
+		}
+		if groupMatches(*existing, groupPath, groupName, attributes) {
+			return existing, MutationOutcomeUnchanged, nil
 		}
 		body := Group{
 			ID:         existing.ID,
@@ -259,9 +263,10 @@ func (c *HTTPClient) CreateOrUpdateGroup(ctx context.Context, realm string, grou
 			Attributes: attributes,
 		}
 		if err := c.doJSON(ctx, http.MethodPut, c.adminPath(realm, "groups", existing.ID), body, nil); err != nil {
-			return nil, err
+			return nil, "", err
 		}
-		return c.findGroupByPath(ctx, realm, groupPath)
+		updated, err := c.findGroupByPath(ctx, realm, groupPath)
+		return updated, MutationOutcomeUpdated, err
 	}
 
 	parentPath := parentGroupPath(groupPath)
@@ -271,7 +276,7 @@ func (c *HTTPClient) CreateOrUpdateGroup(ctx context.Context, realm string, grou
 	} else {
 		parent, err := c.ensureGroupPath(ctx, realm, parentPath)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		createPath = c.adminPath(realm, "groups", parent.ID, "children")
 	}
@@ -282,102 +287,108 @@ func (c *HTTPClient) CreateOrUpdateGroup(ctx context.Context, realm string, grou
 	}
 	if err := c.doJSON(ctx, http.MethodPost, createPath, body, nil); err != nil {
 		if !isKeycloakStatus(err, http.StatusConflict) {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	created, err := c.findGroupByPath(ctx, realm, groupPath)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if created == nil {
-		return nil, fmt.Errorf("keycloak group %q was not found after create", groupPath)
+		return nil, "", fmt.Errorf("keycloak group %q was not found after create", groupPath)
 	}
-	return created, nil
+	return created, MutationOutcomeCreated, nil
 }
 
-func (c *HTTPClient) DeleteGroup(ctx context.Context, realm string, groupIDOrPath string) error {
+func (c *HTTPClient) DeleteGroup(ctx context.Context, realm string, groupIDOrPath string) (MutationOutcome, error) {
 	groupIDOrPath = strings.TrimSpace(groupIDOrPath)
 	if groupIDOrPath == "" {
-		return errors.New("keycloak group id or path is required")
+		return "", errors.New("keycloak group id or path is required")
 	}
 
 	groupID := groupIDOrPath
 	if strings.HasPrefix(groupIDOrPath, "/") {
 		group, err := c.findGroupByPath(ctx, realm, groupIDOrPath)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if group == nil {
-			return nil
+			return MutationOutcomeUnchanged, nil
 		}
 		groupID = group.ID
 	}
 
 	if err := c.doJSON(ctx, http.MethodDelete, c.adminPath(realm, "groups", groupID), nil, nil); err != nil {
 		if isKeycloakStatus(err, http.StatusNotFound) {
-			return nil
+			return MutationOutcomeUnchanged, nil
 		}
-		return err
+		return "", err
 	}
-	return nil
+	return MutationOutcomeDeleted, nil
 }
 
-func (c *HTTPClient) AddUserToGroup(ctx context.Context, realm string, userIDOrUsername string, groupIDOrPath string) error {
+func (c *HTTPClient) AddUserToGroup(ctx context.Context, realm string, userIDOrUsername string, groupIDOrPath string) (MutationOutcome, error) {
 	groupID, err := c.resolveGroupID(ctx, realm, groupIDOrPath)
 	if err != nil {
-		return err
+		return "", err
 	}
 	userID, user, err := c.resolveUserID(ctx, realm, userIDOrUsername)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if userID == "" {
-		return fmt.Errorf("keycloak user %q not found", strings.TrimSpace(userIDOrUsername))
-	}
-	members, err := c.ListGroupMembers(ctx, realm, groupID)
-	if err != nil {
-		return err
-	}
-	if memberMatches(members, userID, userIDOrUsername, user) {
-		return nil
-	}
-	return c.doJSON(ctx, http.MethodPut, c.adminPath(realm, "users", userID, "groups", groupID), nil, nil)
-}
-
-func (c *HTTPClient) RemoveUserFromGroup(ctx context.Context, realm string, userIDOrUsername string, groupIDOrPath string) error {
-	groupID, err := c.resolveExistingGroupID(ctx, realm, groupIDOrPath)
-	if err != nil {
-		return err
-	}
-	if groupID == "" {
-		return nil
-	}
-
-	userID, user, err := c.resolveUserID(ctx, realm, userIDOrUsername)
-	if err != nil {
-		return err
+		return "", &UserNotFoundError{Realm: realm, Ref: strings.TrimSpace(userIDOrUsername)}
 	}
 	members, err := c.ListGroupMembers(ctx, realm, groupID)
 	if err != nil {
 		if isKeycloakStatus(err, http.StatusNotFound) {
-			return nil
+			return "", &GroupNotFoundError{Realm: realm, Ref: strings.TrimSpace(groupIDOrPath)}
 		}
-		return err
+		return "", err
+	}
+	if memberMatches(members, userID, userIDOrUsername, user) {
+		return MutationOutcomeUnchanged, nil
+	}
+	if err := c.doJSON(ctx, http.MethodPut, c.adminPath(realm, "users", userID, "groups", groupID), nil, nil); err != nil {
+		return "", err
+	}
+	return MutationOutcomeUpdated, nil
+}
+
+func (c *HTTPClient) RemoveUserFromGroup(ctx context.Context, realm string, userIDOrUsername string, groupIDOrPath string) (MutationOutcome, error) {
+	groupID, err := c.resolveExistingGroupID(ctx, realm, groupIDOrPath)
+	if err != nil {
+		return "", err
+	}
+	if groupID == "" {
+		return MutationOutcomeUnchanged, nil
+	}
+
+	userID, user, err := c.resolveUserID(ctx, realm, userIDOrUsername)
+	if err != nil {
+		return "", err
+	}
+	members, err := c.ListGroupMembers(ctx, realm, groupID)
+	if err != nil {
+		if isKeycloakStatus(err, http.StatusNotFound) {
+			return MutationOutcomeUnchanged, nil
+		}
+		return "", err
 	}
 	member := matchingMember(members, userID, userIDOrUsername, user)
 	if member == nil {
-		return nil
+		return MutationOutcomeUnchanged, nil
 	}
 	if userID == "" {
 		userID = member.ID
 	}
 	if err := c.doJSON(ctx, http.MethodDelete, c.adminPath(realm, "users", userID, "groups", groupID), nil, nil); err != nil {
 		if isKeycloakStatus(err, http.StatusNotFound) {
-			return nil
+			return MutationOutcomeUnchanged, nil
 		}
-		return err
+		return "", err
 	}
-	return nil
+	return MutationOutcomeUpdated, nil
 }
 
 func (c *HTTPClient) findGroupIDByPath(ctx context.Context, realm string, groupPath string) (string, error) {
@@ -453,7 +464,7 @@ func (c *HTTPClient) resolveGroupID(ctx context.Context, realm string, groupIDOr
 		return "", err
 	}
 	if groupID == "" {
-		return "", fmt.Errorf("keycloak group %q not found", strings.TrimSpace(groupIDOrPath))
+		return "", &GroupNotFoundError{Realm: realm, Ref: strings.TrimSpace(groupIDOrPath)}
 	}
 	return groupID, nil
 }
@@ -488,7 +499,27 @@ func (c *HTTPClient) resolveUserID(ctx context.Context, realm string, userIDOrUs
 	if user != nil {
 		return user.ID, user, nil
 	}
-	return userIDOrUsername, nil, nil
+	user, err = c.GetUser(ctx, realm, userIDOrUsername)
+	if err != nil {
+		if isKeycloakStatus(err, http.StatusNotFound) {
+			return "", nil, nil
+		}
+		return "", nil, err
+	}
+	if user != nil {
+		return user.ID, user, nil
+	}
+	return "", nil, nil
+}
+
+func groupMatches(existing Group, groupPath string, groupName string, attributes map[string][]string) bool {
+	if normalizeAbsolutePath(existing.Path) != normalizeAbsolutePath(groupPath) {
+		return false
+	}
+	if strings.TrimSpace(existing.Name) != strings.TrimSpace(groupName) {
+		return false
+	}
+	return reflect.DeepEqual(existing.Attributes, attributes)
 }
 
 func (c *HTTPClient) appendGroupHierarchy(ctx context.Context, realm string, result []Group, seen map[string]struct{}, group groupResponse) ([]Group, error) {
