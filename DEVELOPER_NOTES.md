@@ -233,78 +233,46 @@ x8. Add tests before widening behavior.
   creation coverage only; live group and membership iRODS mutation coverage
   should wait until the first iRODS mutation slice remains stable.
 
-#### Remaining Decision Points
+#### Resolved First-Wave Decisions
 
-1. What should the first user-facing command shape be?
+1. First user-facing command shape:
 
-- Recommended default:
-  keep everything under `irods-kc-sync`
-  use `sync --dry-run --target=irods` for the first iRODS-mutation slice
-  use `apply --plan ...` to execute them
-- Decision:
-  use an explicit target selector for the first slice rather than mixed-system
-  plans or a separate top-level command
-- Follow-on intent:
-  move toward fuller bi-directional sync later once both directions are stable
+- Keep the first iRODS-mutation slice inside `irods-kc-sync`.
+- Use `sync --dry-run --target=irods` to generate reviewable plans.
+- Use `apply --plan ...` to execute accepted plans.
+- Use explicit selectors instead of mixed-system full synchronization for this
+  first slice.
 
-2. What is the default sync stance for unmatched objects?
+2. Default stance for unmatched objects:
 
-- Recommended default:
-  bi-directional sync should be additive and linking-oriented
-- Meaning:
-  unmatched users/groups are candidate additions first
-  removals require stronger evidence, explicit policy, or review
+- Treat unmatched Keycloak users and groups as candidate iRODS additions before
+  treating unmatched objects as candidate removals.
+- Require stronger evidence, explicit policy, or review for removal.
+- Keep removal conservative when mapping or policy is ambiguous.
 
-3. How should `managed`, `mapped`, and `authority` behave?
+3. Meaning of `managed`, `mapped`, `authority`, and `conflict`:
 
-- Recommended default:
-  `managed` means the toolkit may mutate the object
-  `mapped` means the correspondence is known
-  `authority` is an optional conflict-resolution or directional-repair hint
-- Open point:
-  whether any first-slice operation should still require explicit authority
-  markers before mutation
+- `managed` means the toolkit may mutate the object.
+- `mapped` means the Keycloak-to-iRODS correspondence is known.
+- `authority` is a directional-repair and conflict-resolution hint, not a
+  universal deletion rule.
+- `conflict` records ambiguity or unsafe state that should block or constrain
+  mutation.
 
-4. What minimal iRODS AVUs are required in the first slice?
+4. First-slice iRODS AVU minimums:
 
-- Recommended default for users:
-  enough AVUs to mark managed state and stable mapping identity
-- Recommended default for groups:
-  start with the smallest usable set; avoid overcommitting to group AVUs until
-  group sync behavior is stable
-- Open point:
-  whether group AVUs are required at creation time or only when ambiguity
-  exists
+- User mutations require stable Keycloak user ID mapping evidence.
+- Group mutations require stable Keycloak group ID mapping evidence.
+- Current metadata sync writes managed-by, realm, stable Keycloak ID, and
+  authority evidence for toolkit-managed iRODS users and groups.
 
-5. How should self-service requests be represented?
+5. Scenario-3 credential handling:
 
-- Recommended default:
-  keep the request/approval concept distinct from raw synchronization
-- Open point:
-  whether the first sprint slice implements self-service as a full request
-  workflow or only as the plan/apply mechanics needed beneath it
-
-6. How should delegated group-admin behavior be represented?
-
-- Recommended default:
-  support it in the workflow model and plan semantics now
-  defer full authz enforcement to later HTTP/API work if needed
-- Open point:
-  whether the first CLI slice exposes any special group-admin-facing entrypoint
-
-7. What should the scenario-3 password-action report contain?
-
-- Recommended default:
-  JSON only
-  action-oriented states such as:
-    password_setup_required
-    password_reset_required
-    credential_state_unknown
-    password_write_path_failed
-- Open point:
-  whether the report is emitted inline with sync output, as a sibling file, or
-  as a distinct command output mode
-
+- Password setup/reset is not ordinary synchronization.
+- The current slice emits optional JSON password-action reporting through
+  `--password-action-report`.
+- Notification delivery and direct Keycloak-to-iRODS password write paths remain
+  future work.
 
 Current implemented target selectors:
 
@@ -316,6 +284,100 @@ Current implemented target selectors:
 - A separate `--group-plus-members` selector is not needed for the current
   slice because selected-group planning already includes group metadata and
   conservative membership drift.
+
+#### First-Wave Exit Point
+
+The intended exit point for this wave is interactive real-world testing of a
+Keycloak-to-iRODS administrative workflow.
+
+The workflow to test manually is:
+
+1. Create or choose a Keycloak user or group through the normal administrator
+   surface.
+2. Generate an iRODS-targeted plan with one of:
+   `irods-kc-sync sync --dry-run --target=irods --keycloak-user-id ...`
+   `irods-kc-sync sync --dry-run --target=irods --keycloak-group-id ...`
+   `irods-kc-sync sync --dry-run --target=irods --keycloak-group-path ...`
+3. Review the plan for user, group, metadata, and conservative membership
+   operations.
+4. Apply the accepted plan with:
+   `irods-kc-sync apply --plan plan.json`
+5. Re-run the same dry-run selector and confirm the plan converges or only
+   reports intentionally deferred ambiguity.
+
+Exit criteria before selecting the next sprint:
+
+- A real administrator can provision at least one Keycloak-originating user into
+  iRODS without native-password handling.
+- A real administrator can provision or reconcile at least one Keycloak group
+  into iRODS.
+- A real administrator can inspect membership drift and see conservative add or
+  remove behavior, even if some ambiguous cases are intentionally skipped.
+- Plan/apply output is understandable enough to decide whether the next sprint
+  should improve UX, policy controls, live coverage, authz, or credential
+  workflows.
+- Any real-world testing gaps are recorded as next-sprint candidates rather
+  than patched ad hoc into this first wave.
+
+#### Next Sprint Planning Intake
+
+The next sprint should be selected interactively after real-world testing of the
+first-wave administrative workflow.
+
+Candidate sprint directions:
+
+1. Operator UX and workflow hardening.
+
+- Improve plan readability, summaries, examples, command help, and review
+  ergonomics around the current `sync --dry-run --target=irods` and
+  `apply --plan` flow.
+- Best fit if real-world testing shows the mechanics work but the operator path
+  is too hard to trust or explain.
+
+2. Policy and safety controls.
+
+- Add explicit policy knobs for authority requirements, removal behavior,
+  managed-object constraints, and conflict handling.
+- Best fit if real-world testing shows the main risk is accidental mutation or
+  insufficient control over conservative behavior.
+
+3. Group and membership live coverage.
+
+- Expand focused e2e coverage from user creation into group creation,
+  membership add, membership remove, and ambiguous membership cases.
+- Best fit if real-world testing shows the behavior is promising but needs a
+  stronger safety net before widening use.
+
+4. Delegated group-admin workflow.
+
+- Turn the scaffolded delegated group-admin model into a clearer workflow,
+  likely still CLI-first unless HTTP/API work becomes necessary.
+- Best fit if real administrators need project/group owners to manage iRODS
+  group membership without full iRODS administration rights.
+
+5. Self-service account request workflow.
+
+- Represent request, approval, and fulfillment separately from raw sync while
+  reusing the current plan/apply mechanics beneath it.
+- Best fit if the next priority is scenario-2 user onboarding rather than
+  administrator-driven provisioning.
+
+6. Scenario-3 credential path design.
+
+- Keep credential operations separate from sync and define the direct
+  Keycloak-to-iRODS password setup/reset path, report states, and failure
+  handling.
+- Best fit if password recovery/setup is the next operational blocker.
+
+Next-sprint selection questions:
+
+- Which manual workflow failed first: user provisioning, group provisioning,
+  membership reconciliation, or plan review?
+- Was the failure mechanical, policy-related, UX-related, authz-related, or
+  credential-related?
+- Should the next sprint optimize for administrator confidence, broader live
+  coverage, delegated administration, self-service onboarding, or scenario-3
+  credential support?
 
 ### Tool Class: Keycloak-Driven iRODS Mutation Tooling
 

@@ -8,6 +8,7 @@ import (
 
 	irodsconfig "github.com/cyverse/go-irodsclient/config"
 	irodsfs "github.com/cyverse/go-irodsclient/fs"
+	"github.com/cyverse/go-irodsclient/irods/common"
 	irodstypes "github.com/cyverse/go-irodsclient/irods/types"
 )
 
@@ -125,7 +126,18 @@ func (c *FileSystemClient) GetUser(ctx context.Context, username string, zone st
 	if err != nil {
 		return nil, err
 	}
-	return filesystem.GetUser(username, zone, "")
+	user, err := filesystem.GetUser(username, zone, "")
+	if err != nil {
+		if isUserNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return user, nil
+}
+
+func isUserNotFound(err error) bool {
+	return irodstypes.IsUserNotFoundError(err) || irodstypes.GetIRODSErrorCode(err) == common.CAT_NO_ROWS_FOUND
 }
 
 func (c *FileSystemClient) CreateUser(ctx context.Context, username string, zone string, userType irodstypes.IRODSUserType) (*irodstypes.IRODSUser, error) {
