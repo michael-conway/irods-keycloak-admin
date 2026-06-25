@@ -6,16 +6,17 @@ import (
 	"fmt"
 	"strings"
 
-	irodsconfig "github.com/cyverse/go-irodsclient/config"
 	irodsfs "github.com/cyverse/go-irodsclient/fs"
 	"github.com/cyverse/go-irodsclient/irods/common"
 	irodstypes "github.com/cyverse/go-irodsclient/irods/types"
+	usersandgroups "github.com/michael-conway/go-irodsclient-extensions/usersandgroups"
+	usersandgroupsirodsfs "github.com/michael-conway/go-irodsclient-extensions/usersandgroups/irodsfs"
 )
 
 const defaultApplicationName = "irods-keycloak-admin"
 
 // ConnectionConfig describes a direct iRODS connection for local integration
-// tests or scripted runs that have not initialized an iCommands environment.
+// tests or scripted runs.
 type ConnectionConfig struct {
 	Host            string
 	Port            int
@@ -32,33 +33,6 @@ type FileSystemClient struct {
 }
 
 var _ Client = (*FileSystemClient)(nil)
-
-// NewFromICommandsEnvironment creates a client from an iCommands-compatible
-// environment file. If envFile is empty, go-irodsclient's default
-// ~/.irods/irods_environment.json location is used.
-func NewFromICommandsEnvironment(envFile string, applicationName string) (*FileSystemClient, *irodstypes.IRODSAccount, error) {
-	manager, err := irodsconfig.NewICommandsEnvironmentManager()
-	if err != nil {
-		return nil, nil, err
-	}
-	if strings.TrimSpace(envFile) != "" {
-		if err := manager.SetEnvironmentFilePath(envFile); err != nil {
-			return nil, nil, err
-		}
-	}
-	if err := manager.Load(); err != nil {
-		return nil, nil, err
-	}
-	account, err := manager.ToIRODSAccount()
-	if err != nil {
-		return nil, nil, err
-	}
-	client, err := NewFromAccount(account, applicationName)
-	if err != nil {
-		return nil, nil, err
-	}
-	return client, account, nil
-}
 
 // NewFromConnectionConfig creates a client from explicit connection settings.
 func NewFromConnectionConfig(cfg ConnectionConfig, applicationName string) (*FileSystemClient, *irodstypes.IRODSAccount, error) {
@@ -149,6 +123,30 @@ func (c *FileSystemClient) CreateUser(ctx context.Context, username string, zone
 		return nil, err
 	}
 	return filesystem.CreateUser(username, zone, userType)
+}
+
+func (c *FileSystemClient) CreateGroup(ctx context.Context, groupName string, zone string) (*irodstypes.IRODSUser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	filesystem, err := c.requireFileSystem()
+	if err != nil {
+		return nil, err
+	}
+	service := usersandgroups.NewService(usersandgroupsirodsfs.NewAdapter(filesystem), zone)
+	group, err := service.CreateGroup(ctx, usersandgroups.GroupRequest{
+		Zone: zone,
+		Name: groupName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &irodstypes.IRODSUser{
+		ID:   group.ID,
+		Name: group.Name,
+		Zone: group.Zone,
+		Type: group.Type,
+	}, nil
 }
 
 func (c *FileSystemClient) RemoveUser(ctx context.Context, username string, zone string, userType irodstypes.IRODSUserType) error {

@@ -145,7 +145,7 @@ func ValidateOperationForApply(syncPlan domain.SyncPlan, operation domain.PlanOp
 		if evidencePath := EvidenceString(operation, "keycloak_path"); evidencePath != "" && NormalizeGroupPath(evidencePath) != groupPath {
 			return fmt.Errorf("operation %q keycloak_path evidence does not match target", operation.OperationID)
 		}
-	case domain.PlanActionIRODSUserCreate, domain.PlanActionIRODSUserMetadataSync:
+	case domain.PlanActionIRODSUserCreate:
 		if targetSystem != domain.SyncTargetIRODS {
 			return fmt.Errorf("operation %q has unsupported action %q for target %q", operation.OperationID, operation.Action, targetSystem)
 		}
@@ -155,6 +155,23 @@ func ValidateOperationForApply(syncPlan domain.SyncPlan, operation domain.PlanOp
 		}
 		if EvidenceString(operation, "keycloak_user_id") == "" {
 			return fmt.Errorf("operation %q keycloak_user_id evidence is required", operation.OperationID)
+		}
+		if evidenceUsername := firstNonEmpty(EvidenceString(operation, "irods_username"), EvidenceString(operation, "keycloak_username")); evidenceUsername != "" && evidenceUsername != username {
+			return fmt.Errorf("operation %q username evidence does not match target", operation.OperationID)
+		}
+	case domain.PlanActionIRODSUserMetadataSync:
+		if targetSystem != domain.SyncTargetIRODS && targetSystem != domain.SyncTargetKeycloak {
+			return fmt.Errorf("operation %q has unsupported action %q for target %q", operation.OperationID, operation.Action, targetSystem)
+		}
+		username, err := IRODSUserTarget(operation)
+		if err != nil {
+			return fmt.Errorf("operation %q: %w", operation.OperationID, err)
+		}
+		if targetSystem == domain.SyncTargetIRODS && EvidenceString(operation, "keycloak_user_id") == "" {
+			return fmt.Errorf("operation %q keycloak_user_id evidence is required", operation.OperationID)
+		}
+		if targetSystem == domain.SyncTargetKeycloak && EvidenceString(operation, "keycloak_user_id") == "" && EvidenceString(operation, "keycloak_user_id_source") != "created_or_resolved_by_previous_operation" {
+			return fmt.Errorf("operation %q keycloak_user_id evidence or post-create keycloak_user_id_source evidence is required", operation.OperationID)
 		}
 		if evidenceUsername := firstNonEmpty(EvidenceString(operation, "irods_username"), EvidenceString(operation, "keycloak_username")); evidenceUsername != "" && evidenceUsername != username {
 			return fmt.Errorf("operation %q username evidence does not match target", operation.OperationID)

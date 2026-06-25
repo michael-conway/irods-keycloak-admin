@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 
+	irodstypes "github.com/cyverse/go-irodsclient/irods/types"
+
 	"github.com/michael-conway/irods-keycloak-admin/internal/domain"
 	"github.com/michael-conway/irods-keycloak-admin/internal/irodsadapter"
 	"github.com/michael-conway/irods-keycloak-admin/internal/keycloakadmin"
@@ -17,6 +19,8 @@ const (
 	mirrorAttrGroupName = "irods_group_name"
 	mirrorAttrZone      = "irods_zone"
 	mirrorAttrAuthority = "authority"
+
+	defaultManagedByValue = "irods-keycloak-admin"
 )
 
 type Service struct {
@@ -43,6 +47,7 @@ type irodsGroupSnapshot struct {
 type irodsUserSnapshot struct {
 	Username string
 	Zone     string
+	Metadata []*irodstypes.IRODSMeta
 }
 
 type keycloakGroupSnapshot struct {
@@ -80,6 +85,9 @@ func (s *Service) Apply(ctx context.Context, req domain.ApplyRequest) (domain.Ap
 
 	syncPlan := *req.Plan
 	if _, _, err := s.resolveApplyScope(req, syncPlan); err != nil {
+		return domain.ApplyResult{}, err
+	}
+	if err := s.validateApplyAdapters(syncPlan); err != nil {
 		return domain.ApplyResult{}, err
 	}
 	reviewSession, err := s.newReviewSession()
@@ -133,6 +141,15 @@ func (s *Service) validateKeycloak() error {
 	}
 	if s.Keycloak == nil {
 		return errors.New("keycloak admin client is required")
+	}
+	return nil
+}
+
+func (s *Service) validateApplyAdapters(syncPlan domain.SyncPlan) error {
+	for _, operation := range syncPlan.Operations {
+		if operation.Action == domain.PlanActionIRODSUserMetadataSync && s.IRODS == nil {
+			return errors.New("irods adapter is required for post-create user metadata sync")
+		}
 	}
 	return nil
 }

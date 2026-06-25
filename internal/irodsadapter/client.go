@@ -12,6 +12,7 @@ import (
 type Client interface {
 	GetUser(ctx context.Context, username string, zone string) (*irodstypes.IRODSUser, error)
 	CreateUser(ctx context.Context, username string, zone string, userType irodstypes.IRODSUserType) (*irodstypes.IRODSUser, error)
+	CreateGroup(ctx context.Context, groupName string, zone string) (*irodstypes.IRODSUser, error)
 	RemoveUser(ctx context.Context, username string, zone string, userType irodstypes.IRODSUserType) error
 	ListUsers(ctx context.Context, zone string, userType irodstypes.IRODSUserType) ([]*irodstypes.IRODSUser, error)
 	ListGroupMembers(ctx context.Context, zone string, groupName string) ([]*irodstypes.IRODSUser, error)

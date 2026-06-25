@@ -286,7 +286,7 @@ func (s *Service) ApplyGroup(ctx context.Context, req domain.ProvisionGroupReque
 
 	applied := false
 	if !state.groupExists {
-		if _, err := s.IRODS.CreateUser(ctx, state.groupName, state.zone, irodstypes.IRODSUserRodsGroup); err != nil {
+		if _, err := s.IRODS.CreateGroup(ctx, state.groupName, state.zone); err != nil {
 			return domain.MutationResult{}, fmt.Errorf("create iRODS group %q in zone %q: %w", state.groupName, state.zone, err)
 		}
 		applied = true
@@ -454,7 +454,7 @@ func (s *Service) applyPlanOperation(ctx context.Context, syncPlan domain.SyncPl
 		if existing != nil {
 			return keycloakadmin.MutationOutcomeUnchanged, nil
 		}
-		if _, err := s.IRODS.CreateUser(ctx, groupName, zone, irodstypes.IRODSUserRodsGroup); err != nil {
+		if _, err := s.IRODS.CreateGroup(ctx, groupName, zone); err != nil {
 			return "", err
 		}
 		return keycloakadmin.MutationOutcomeCreated, nil

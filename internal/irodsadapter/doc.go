@@ -8,5 +8,5 @@
 //
 // This package must not call irods-go-rest. Generic irods-go-rest endpoints are
 // reserved for external HTTP clients, while local CLIs should use the shared
-// gocmd/iCommands environment and direct library calls.
+// direct go-irodsclient library calls.
 package irodsadapter

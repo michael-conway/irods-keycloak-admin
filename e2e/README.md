@@ -53,16 +53,13 @@ in this directory may call `LoadConfig()` directly and must not require live
 containers.
 
 The live tests generate repair plans from the running systems and apply filtered
-plans against temporary `kcapply*`, `kcdry*`, and `kcirodsuser*` fixtures. Apply
-tests cover Keycloak mirror repair plus one narrow Keycloak-to-iRODS user
-mutation through `irods-kc-sync apply`; iRODS fixture setup and cleanup still use
-`iadmin`. The apply coverage also replays the same plan after convergence to
-verify repeat apply behavior.
-
-Some live fixture setup uses `docker exec` against the `irods-grid-stack` iRODS
-provider container to run `iadmin` operations.
-Override `IRODS_KC_E2E_IRODS_PROVIDER_CONTAINER` when the compose project or
-provider service name differs from the defaults.
+plans against temporary `kcapply*`, `kcdry*`, `kcirodsuser*`, and `kcirods*`
+fixtures. Apply tests cover Keycloak mirror repair, selected Keycloak-to-iRODS
+user and group provisioning, membership drift, and iRODS-to-Keycloak user
+creation through `irods-kc-sync apply`. iRODS fixture setup, cleanup, and AVU
+assertions use `go-irodsclient` plus `go-irodsclient-extensions` directly rather
+than shelling out to external command-line clients. The apply coverage also replays the same plan
+after convergence to verify repeat apply behavior.
 
 The e2e env files also provide Keycloak Admin REST credentials for dry-run and
 apply tests:

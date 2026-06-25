@@ -2,7 +2,10 @@ module github.com/michael-conway/irods-keycloak-admin
 
 go 1.25.0
 
-require github.com/cyverse/go-irodsclient v0.20.1-0.20260605235210-f3125ea03517
+require (
+	github.com/cyverse/go-irodsclient v0.20.1-0.20260605235210-f3125ea03517
+	github.com/michael-conway/go-irodsclient-extensions v0.0.0-20260625132823-a8d8221e0b62
+)
 
 require (
 	github.com/cockroachdb/errors v1.12.0 // indirect

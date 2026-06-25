@@ -231,9 +231,7 @@ Apply parameters:
 
 Connection parameters:
 
-- iRODS access can come from an iCommands environment file through
-  `--irods-env`.
-- iRODS access can also be supplied directly with `--irods-host`,
+- iRODS access is supplied directly with `--irods-host`,
   `--irods-port`, `--irods-user`, `--irods-password`, and `--irods-resource`.
 - Keycloak access is configured with `--keycloak-url`,
   `--keycloak-admin-realm`, `--keycloak-client-id`,
@@ -270,6 +268,39 @@ metadata, and plan conservative membership add/remove operations. Membership
 adds require stable Keycloak user identity and a matching iRODS user mapping.
 Membership removals are conservative and leave ambiguous, unmanaged, or
 unmapped iRODS members untouched.
+
+### Sync Decision Table
+
+This table summarizes the current `irods-kc-sync` planning responses for common
+states. The command always produces an ordered JSON plan first; apply executes
+the accepted operations in that order.
+
+| Observed state | Sync target | Planned response | Apply behavior | Notes |
+| --- | --- | --- | --- | --- |
+| iRODS rods user exists and exact Keycloak user is missing | `keycloak` | `keycloak.user.create`, followed by `irods.user.metadata.sync` | Create or resolve the Keycloak user, then attach managed mapping AVUs to the iRODS user using the assigned Keycloak user ID | The AVU operation is intentionally separate because the Keycloak UUID is only known after create or lookup. |
+| iRODS rods user exists, exact Keycloak user exists, and iRODS mapping AVUs are missing or incomplete | `keycloak` | `irods.user.metadata.sync` | Add only missing managed mapping AVUs to the iRODS user | This lets a partially applied user-create flow converge on a later run. |
+| iRODS rods user exists, exact Keycloak user exists, and mapping AVUs are complete | `keycloak` | No user operation | No mutation | The user is already mapped and converged for user-existence sync. |
+| iRODS group exists and managed Keycloak mirror group is missing | `keycloak` | `keycloak.group.create` | Create or update the Keycloak mirror group under the configured mirror root | Group creation carries iRODS group name, zone, and authority attributes in Keycloak. |
+| iRODS group member exists and mapped Keycloak user is not in the managed mirror group | `keycloak` | `keycloak.group.member.add` | Add the Keycloak user to the mirror group | If the user is also missing in Keycloak, the plan orders user creation before membership changes. |
+| Managed Keycloak mirror group has a member that is not in the authoritative iRODS group | `keycloak` | `keycloak.group.member.remove` | Remove the user from the Keycloak mirror group | This is mirror repair from iRODS into Keycloak. It does not remove the iRODS user. |
+| Managed Keycloak mirror group exists but corresponding iRODS group is missing | `keycloak` | `keycloak.group.delete` with `requires_approval` | Delete only when review policy accepts the guarded operation | Stale mirror deletion is intentionally guarded. |
+| Keycloak user selected by `--keycloak-user-id` is missing in iRODS | `irods` | `irods.user.create`, followed by `irods.user.metadata.sync` | Create the iRODS user, then attach managed mapping AVUs | This is explicit selected-user provisioning, not unbounded Keycloak-to-iRODS sync. |
+| Keycloak user selected by `--keycloak-user-id` exists in iRODS but mapping AVUs are missing or incomplete | `irods` | `irods.user.metadata.sync` | Add only missing managed mapping AVUs | Stable Keycloak user ID evidence is required. |
+| Keycloak group selected by ID or path is missing in iRODS | `irods` | `irods.group.create`, followed by `irods.group.metadata.sync` | Create the iRODS group, then attach managed mapping AVUs | Group selectors keep the current iRODS-targeted slice explicit and bounded. |
+| Keycloak selected group exists in iRODS but group mapping AVUs are missing or incomplete | `irods` | `irods.group.metadata.sync` | Add only missing managed mapping AVUs | Stable Keycloak group ID evidence is required. |
+| Keycloak selected group has a mapped member missing from the iRODS group | `irods` | `irods.group.member.add` | Add the existing mapped iRODS user to the iRODS group | Membership adds require both stable Keycloak identity and matching iRODS user mapping. |
+| Mapped iRODS group has a mapped member absent from the selected Keycloak group | `irods` | `irods.group.member.remove` | Remove the user from the iRODS group | Ambiguous, unmanaged, or unmapped members are left untouched. |
+| User, group, or membership state is ambiguous or lacks stable identity evidence | either | No destructive operation; may omit the candidate or classify it as unresolved evidence | No mutation | Operators should resolve mapping evidence or policy before forcing synchronization. |
+
+Managed mapping AVUs currently used for iRODS users and groups are:
+
+| AVU attribute | Meaning |
+| --- | --- |
+| `irods_keycloak_managed_by` | Records that the mapping is managed by this toolkit. |
+| `irods_keycloak_realm` | Records the Keycloak realm for the mapped identity or group. |
+| `irods_keycloak_user_id` | Records the stable Keycloak user UUID for mapped users. |
+| `irods_keycloak_group_id` | Records the stable Keycloak group UUID for mapped groups. |
+| `irods_keycloak_authority` | Records the authority policy value, currently `irods` for implemented sync plans. |
 
 ### Recommended Review Workflow
 
@@ -349,14 +380,14 @@ Administrative capabilities needed:
 - user self-service to request an iRODS account
 - administrator provisioning of users
 - administrator and group-admin provisioning of groups and group memberships
-- synchronization when actions are initiated either through `iadmin` or through
-  Keycloak-facing workflow surfaces
+- synchronization when actions are initiated either through direct iRODS
+  administrative surfaces or through Keycloak-facing workflow surfaces
 
 Tools and framework themes:
 
 - Keycloak LDAP federation
 - iRODS PAM LDAP
-- iRODS administration through `iadmin` and service tooling
+- iRODS administration through direct service tooling
 - Keycloak Admin REST for user, group, and group-membership workflow surfaces
 - synchronization and reconciliation workflows for users, groups, and
   memberships
@@ -393,8 +424,8 @@ Group operations:
 - administrators must be able to provision groups
 - delegated group administrators must be able to manage group membership within
   approved scope
-- synchronization must tolerate changes that originate through either `iadmin`
-  or Keycloak workflow surfaces
+- synchronization must tolerate changes that originate through either direct
+  iRODS administrative surfaces or Keycloak workflow surfaces
 
 Administrative expectation:
 
@@ -423,8 +454,8 @@ Administrative capabilities needed:
 - user self-service to request an account
 - administrator provisioning of users
 - administrator and group-admin provisioning of groups and group memberships
-- synchronization when actions are initiated either through `iadmin` or through
-  Keycloak-facing workflow surfaces
+- synchronization when actions are initiated either through direct iRODS
+  administrative surfaces or through Keycloak-facing workflow surfaces
 - a defined password-setting path for new users and password updates
 
 Tools and framework themes:
@@ -474,8 +505,8 @@ Group operations:
 - administrators must be able to provision groups
 - delegated group administrators must be able to manage group membership within
   approved scope
-- synchronization must tolerate changes that originate through either `iadmin`
-  or Keycloak workflow surfaces
+- synchronization must tolerate changes that originate through either direct
+  iRODS administrative surfaces or Keycloak workflow surfaces
 
 Password operations:
 
@@ -515,7 +546,7 @@ TBD
 
 TBD
 
-### Scenario 5: Keycloak-only REST, No Human iCommands
+### Scenario 5: Keycloak-only REST, No Human Direct iRODS Login
 
 #### Tools and Frameworks to Apply to This Scenario
 

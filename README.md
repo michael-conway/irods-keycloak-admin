@@ -44,7 +44,7 @@ What is still scaffolded or reserved:
 
 ## Repository Boundary
 
-This project is not a replacement for iCommands, `gocmd`, or `irods-go-rest`.
+This project is not a replacement for `gocmd` or `irods-go-rest`.
 Generic iRODS administration still belongs in those tools.
 
 This repository owns:
@@ -216,8 +216,7 @@ Common service-level configuration:
 - `IRODS_KC_KEYCLOAK_REALM`
 - `IRODS_KC_KEYCLOAK_MIRROR_ROOT`
 
-`sync` can connect to iRODS either with explicit connection
-parameters or by falling back to an iCommands-compatible environment.
+`sync` connects to iRODS with explicit direct connection parameters.
 
 Direct iRODS settings:
 
@@ -227,11 +226,6 @@ Direct iRODS settings:
 - `IRODS_KC_IRODS_PASSWORD`
 - `IRODS_KC_IRODS_RESOURCE`
 - `IRODS_KC_IRODS_ZONE`
-- `IRODS_ENVIRONMENT_FILE`
-
-If direct host settings are omitted, `irods-kc-sync` falls back to the
-iCommands environment file. `--irods-env` can point to a specific environment
-file.
 
 Keycloak Admin REST settings:
 

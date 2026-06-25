@@ -8,6 +8,7 @@ import (
 
 	irodstypes "github.com/cyverse/go-irodsclient/irods/types"
 
+	"github.com/michael-conway/irods-keycloak-admin/internal/avu"
 	"github.com/michael-conway/irods-keycloak-admin/internal/domain"
 	"github.com/michael-conway/irods-keycloak-admin/internal/keycloakadmin"
 	"github.com/michael-conway/irods-keycloak-admin/internal/mapper"
@@ -29,6 +30,9 @@ func TestRepairKeycloakPlansMissingMirrorGroupAndMembership(t *testing.T) {
 			"project-alpha": {
 				{ID: 200, Name: "alice", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
 			},
+		},
+		metadata: map[string][]*irodstypes.IRODSMeta{
+			"tempZone/alice": mappedUserMetadata("example", "kc-alice"),
 		},
 	}
 	keycloak := &fakeKeycloakClient{
@@ -94,6 +98,9 @@ func TestRepairKeycloakUsesConfiguredMirrorRoot(t *testing.T) {
 				{ID: 200, Name: "alice", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
 			},
 		},
+		metadata: map[string][]*irodstypes.IRODSMeta{
+			"tempZone/alice": mappedUserMetadata("example", "kc-alice"),
+		},
 	}
 	keycloak := &fakeKeycloakClient{
 		users: map[string]keycloakadmin.User{
@@ -137,6 +144,9 @@ func TestRepairKeycloakPlansMembershipDriftAndStaleMirror(t *testing.T) {
 			"project-alpha": {
 				{ID: 200, Name: "alice", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
 			},
+		},
+		metadata: map[string][]*irodstypes.IRODSMeta{
+			"tempZone/alice": mappedUserMetadata("example", "kc-alice"),
 		},
 	}
 	keycloak := &fakeKeycloakClient{
@@ -242,6 +252,9 @@ func TestRepairKeycloakIgnoresMirrorRootContainer(t *testing.T) {
 				{ID: 200, Name: "anonymous", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
 			},
 		},
+		metadata: map[string][]*irodstypes.IRODSMeta{
+			"tempZone/anonymous": mappedUserMetadata("example", "kc-anonymous"),
+		},
 	}
 	keycloak := &fakeKeycloakClient{
 		users: map[string]keycloakadmin.User{
@@ -312,18 +325,22 @@ func TestRepairKeycloakPlansMissingMirrorUser(t *testing.T) {
 		t.Fatalf("RepairKeycloak returned error: %v", err)
 	}
 
-	if plan.Summary.CreateKeycloakUsers != 1 {
+	if plan.Summary.CreateKeycloakUsers != 1 || plan.Summary.UpdateIRODSUserMetadata != 1 {
 		t.Fatalf("expected one user create, got %+v", plan.Summary)
 	}
 	assertActions(t, plan, []string{
 		domain.PlanActionKeycloakUserCreate,
+		domain.PlanActionIRODSUserMetadataSync,
 	})
 	assertTargets(t, plan, []string{
+		"frog",
 		"frog",
 	})
 	assertEvidenceValue(t, plan.Operations[0], "change_cause", "missing_mirror_user")
 	assertEvidenceValue(t, plan.Operations[0], "irods_username", "frog")
 	assertEvidenceValue(t, plan.Operations[0], "keycloak_username", "frog")
+	assertEvidenceValue(t, plan.Operations[1], "change_cause", "post_create_identity_mapping")
+	assertEvidenceValue(t, plan.Operations[1], "keycloak_user_id_source", "created_or_resolved_by_previous_operation")
 }
 
 func TestRepairKeycloakOrdersOperationsDeterministically(t *testing.T) {
@@ -347,6 +364,12 @@ func TestRepairKeycloakOrdersOperationsDeterministically(t *testing.T) {
 				{ID: 202, Name: "bob", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
 				{ID: 203, Name: "alice", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
 			},
+		},
+		metadata: map[string][]*irodstypes.IRODSMeta{
+			"tempZone/alice": mappedUserMetadata("example", "kc-alice"),
+			"tempZone/amy":   mappedUserMetadata("example", "kc-amy"),
+			"tempZone/bob":   mappedUserMetadata("example", "kc-bob"),
+			"tempZone/zoe":   mappedUserMetadata("example", "kc-zoe"),
 		},
 	}
 	keycloak := &fakeKeycloakClient{
@@ -505,6 +528,102 @@ func TestApplyCreatesKeycloakUser(t *testing.T) {
 	}
 	if result.Operations[0].KeycloakMirror.User != "frog" {
 		t.Fatalf("unexpected mutation result: %+v", result.Operations[0])
+	}
+}
+
+func TestApplyCreatesKeycloakUserThenSyncsIRODSMappingAVUs(t *testing.T) {
+	irods := &fakeIRODSClient{}
+	keycloak := &fakeKeycloakClient{}
+	service := Service{IRODS: irods, Keycloak: keycloak}
+	plan := testApplyPlan([]domain.PlanOperation{
+		{
+			OperationID: "op-001",
+			Action:      domain.PlanActionKeycloakUserCreate,
+			Target:      "frog",
+			Risk:        "low",
+			Evidence: map[string]any{
+				"irods_username":    "frog",
+				"irods_zone":        "tempZone",
+				"keycloak_realm":    "example",
+				"keycloak_username": "frog",
+			},
+		},
+		{
+			OperationID: "op-002",
+			Action:      domain.PlanActionIRODSUserMetadataSync,
+			Target:      "frog",
+			Risk:        "low",
+			Evidence: map[string]any{
+				"irods_username":          "frog",
+				"irods_zone":              "tempZone",
+				"keycloak_realm":          "example",
+				"keycloak_username":       "frog",
+				"keycloak_user_id_source": "created_or_resolved_by_previous_operation",
+			},
+		},
+	})
+
+	result, err := service.Apply(context.Background(), domain.ApplyRequest{
+		RequestMetadata: domain.RequestMetadata{Realm: "example", Zone: "tempZone"},
+		Plan:            &plan,
+	})
+	if err != nil {
+		t.Fatalf("Apply returned error: %v", err)
+	}
+	if result.Status != "applied" || result.Applied != 2 || result.Failed != 0 {
+		t.Fatalf("unexpected apply result: %+v", result)
+	}
+	assertAddedMetadata(t, irods, "frog", "tempZone", map[string]string{
+		avu.ManagedByAttribute:      defaultManagedByValue,
+		avu.KeycloakRealmAttribute:  "example",
+		avu.KeycloakUserIDAttribute: "kc-frog",
+		avu.AuthorityAttribute:      domain.SyncPlanAuthorityIRODS,
+	})
+	if result.Operations[1].IRODS == nil || result.Operations[1].IRODS.Status != "applied" {
+		t.Fatalf("unexpected iRODS mutation result: %+v", result.Operations[1])
+	}
+}
+
+func TestApplySkipsPostCreateAVUSyncWhenMetadataAlreadyPresent(t *testing.T) {
+	irods := &fakeIRODSClient{
+		metadata: map[string][]*irodstypes.IRODSMeta{
+			"tempZone/frog": {
+				{Name: avu.ManagedByAttribute, Value: defaultManagedByValue},
+				{Name: avu.KeycloakRealmAttribute, Value: "example"},
+				{Name: avu.KeycloakUserIDAttribute, Value: "kc-frog"},
+				{Name: avu.AuthorityAttribute, Value: domain.SyncPlanAuthorityIRODS},
+			},
+		},
+	}
+	keycloak := &fakeKeycloakClient{
+		users: map[string]keycloakadmin.User{
+			"frog": {ID: "kc-frog", Username: "frog"},
+		},
+	}
+	service := Service{IRODS: irods, Keycloak: keycloak}
+	plan := testApplyPlan([]domain.PlanOperation{{
+		OperationID: "op-001",
+		Action:      domain.PlanActionIRODSUserMetadataSync,
+		Target:      "frog",
+		Risk:        "low",
+		Evidence: map[string]any{
+			"irods_username":          "frog",
+			"irods_zone":              "tempZone",
+			"keycloak_realm":          "example",
+			"keycloak_username":       "frog",
+			"keycloak_user_id_source": "created_or_resolved_by_previous_operation",
+		},
+	}})
+
+	result, err := service.Apply(context.Background(), domain.ApplyRequest{
+		RequestMetadata: domain.RequestMetadata{Realm: "example", Zone: "tempZone"},
+		Plan:            &plan,
+	})
+	if err != nil {
+		t.Fatalf("Apply returned error: %v", err)
+	}
+	if result.Status != "skipped" || result.Skipped != 1 || len(irods.addedMetadata) != 0 {
+		t.Fatalf("unexpected idempotent apply result: result=%+v added=%+v", result, irods.addedMetadata)
 	}
 }
 
@@ -986,10 +1105,35 @@ func assertTargets(t *testing.T, plan domain.SyncPlan, want []string) {
 	}
 }
 
+func assertAddedMetadata(t *testing.T, irods *fakeIRODSClient, username string, zone string, want map[string]string) {
+	t.Helper()
+	got := map[string]string{}
+	for _, entry := range irods.metadata[zone+"/"+username] {
+		if entry == nil {
+			continue
+		}
+		got[entry.Name] = entry.Value
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected metadata:\nwant %+v\ngot  %+v", want, got)
+	}
+}
+
+func mappedUserMetadata(realm string, keycloakUserID string) []*irodstypes.IRODSMeta {
+	return []*irodstypes.IRODSMeta{
+		{Name: avu.ManagedByAttribute, Value: defaultManagedByValue},
+		{Name: avu.KeycloakRealmAttribute, Value: realm},
+		{Name: avu.KeycloakUserIDAttribute, Value: keycloakUserID},
+		{Name: avu.AuthorityAttribute, Value: domain.SyncPlanAuthorityIRODS},
+	}
+}
+
 type fakeIRODSClient struct {
-	users   []*irodstypes.IRODSUser
-	groups  []*irodstypes.IRODSUser
-	members map[string][]*irodstypes.IRODSUser
+	users         []*irodstypes.IRODSUser
+	groups        []*irodstypes.IRODSUser
+	members       map[string][]*irodstypes.IRODSUser
+	metadata      map[string][]*irodstypes.IRODSMeta
+	addedMetadata []string
 }
 
 func (f *fakeIRODSClient) GetUser(context.Context, string, string) (*irodstypes.IRODSUser, error) {
@@ -997,6 +1141,10 @@ func (f *fakeIRODSClient) GetUser(context.Context, string, string) (*irodstypes.
 }
 
 func (f *fakeIRODSClient) CreateUser(context.Context, string, string, irodstypes.IRODSUserType) (*irodstypes.IRODSUser, error) {
+	return nil, nil
+}
+
+func (f *fakeIRODSClient) CreateGroup(context.Context, string, string) (*irodstypes.IRODSUser, error) {
 	return nil, nil
 }
 
@@ -1026,12 +1174,26 @@ func (f *fakeIRODSClient) RemoveGroupMember(context.Context, string, string, str
 	return nil
 }
 
-func (f *fakeIRODSClient) AddUserMetadata(context.Context, string, string, *irodstypes.IRODSMeta) error {
+func (f *fakeIRODSClient) AddUserMetadata(_ context.Context, username string, zone string, metadata *irodstypes.IRODSMeta) error {
+	if metadata == nil {
+		return nil
+	}
+	key := zone + "/" + username
+	f.metadata = ensureMetadataMap(f.metadata)
+	f.metadata[key] = append(f.metadata[key], &irodstypes.IRODSMeta{Name: metadata.Name, Value: metadata.Value, Units: metadata.Units})
+	f.addedMetadata = append(f.addedMetadata, key+"|"+metadata.Name+"="+metadata.Value)
 	return nil
 }
 
-func (f *fakeIRODSClient) ListUserMetadata(context.Context, string, string) ([]*irodstypes.IRODSMeta, error) {
-	return nil, nil
+func (f *fakeIRODSClient) ListUserMetadata(_ context.Context, username string, zone string) ([]*irodstypes.IRODSMeta, error) {
+	return append([]*irodstypes.IRODSMeta(nil), f.metadata[zone+"/"+username]...), nil
+}
+
+func ensureMetadataMap(metadata map[string][]*irodstypes.IRODSMeta) map[string][]*irodstypes.IRODSMeta {
+	if metadata != nil {
+		return metadata
+	}
+	return map[string][]*irodstypes.IRODSMeta{}
 }
 
 type fakeKeycloakClient struct {
@@ -1105,10 +1267,17 @@ func (f *fakeKeycloakClient) ListGroupMembers(_ context.Context, _ string, group
 
 func (f *fakeKeycloakClient) CreateOrUpdateUser(_ context.Context, _ string, user keycloakadmin.User) (*keycloakadmin.User, error) {
 	f.createUserCalls++
+	if user.ID == "" {
+		user.ID = "kc-" + user.Username
+	}
 	f.createdUsers = append(f.createdUsers, user)
 	if f.createUserErr != nil {
 		return nil, f.createUserErr
 	}
+	if f.users == nil {
+		f.users = map[string]keycloakadmin.User{}
+	}
+	f.users[user.Username] = user
 	return &user, nil
 }
 

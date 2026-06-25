@@ -17,6 +17,12 @@ import (
 	"testing"
 	"time"
 
+	irodsfs "github.com/cyverse/go-irodsclient/fs"
+	"github.com/cyverse/go-irodsclient/irods/common"
+	irodstypes "github.com/cyverse/go-irodsclient/irods/types"
+	"github.com/michael-conway/go-irodsclient-extensions/usersandgroups"
+	usersandgroupsirodsfs "github.com/michael-conway/go-irodsclient-extensions/usersandgroups/irodsfs"
+	usersyncirodsfs "github.com/michael-conway/go-irodsclient-extensions/usersync/irodsfs"
 	"github.com/michael-conway/irods-keycloak-admin/internal/domain"
 )
 
@@ -214,8 +220,15 @@ func createIRODSGroupWithMember(t *testing.T, ctx context.Context, cfg Config, g
 	t.Helper()
 
 	ensureIRODSUserExists(t, ctx, cfg, username)
-	runIAdmin(t, ctx, cfg, true, "mkgroup", groupName)
-	runIAdmin(t, ctx, cfg, true, "atg", groupName, username)
+	fs := newE2EIRODSFilesystem(t, cfg)
+	defer fs.Release()
+	service := usersandgroups.NewService(usersandgroupsirodsfs.NewAdapter(fs), cfg.IRODS.Zone)
+	if _, err := service.CreateGroup(ctx, usersandgroups.GroupRequest{Name: groupName}); err != nil {
+		t.Fatalf("create iRODS group %q: %v", groupName, err)
+	}
+	if err := service.AddGroupMember(ctx, usersandgroups.GroupMemberRequest{GroupName: groupName, UserName: username}); err != nil {
+		t.Fatalf("add iRODS group member %q to %q: %v", username, groupName, err)
+	}
 }
 
 func ensureIRODSUserExists(t *testing.T, ctx context.Context, cfg Config, username string) {
@@ -226,19 +239,98 @@ func ensureIRODSUserExists(t *testing.T, ctx context.Context, cfg Config, userna
 		t.Fatal("iRODS username is required")
 	}
 
-	runIAdmin(t, ctx, cfg, false, "mkuser", username, "rodsuser")
+	fs := newE2EIRODSFilesystem(t, cfg)
+	defer fs.Release()
+	if _, err := fs.GetUser(username, cfg.IRODS.Zone, irodstypes.IRODSUserRodsUser); err == nil {
+		return
+	} else if !isE2EUserNotFound(err) {
+		t.Fatalf("lookup iRODS user %q: %v", username, err)
+	}
+	if _, err := fs.CreateUser(username, cfg.IRODS.Zone, irodstypes.IRODSUserRodsUser); err != nil {
+		t.Fatalf("create iRODS user %q: %v", username, err)
+	}
 }
 
 func requireIRODSUserExists(t *testing.T, ctx context.Context, cfg Config, username string) {
 	t.Helper()
 
-	stdout, stderr, err := runIAdminOutput(ctx, cfg, "lu", username)
+	fs := newE2EIRODSFilesystem(t, cfg)
+	defer fs.Release()
+	user, err := fs.GetUser(username, cfg.IRODS.Zone, irodstypes.IRODSUserRodsUser)
 	if err != nil {
-		t.Fatalf("expected iRODS user %q to exist: %v\nstdout:\n%s\nstderr:\n%s", username, err, stdout, stderr)
+		t.Fatalf("expected iRODS user %q to exist: %v", username, err)
 	}
-	if !strings.Contains(stdout, username) {
-		t.Fatalf("iRODS user lookup did not include %q\nstdout:\n%s\nstderr:\n%s", username, stdout, stderr)
+	if user == nil || user.Name != username {
+		t.Fatalf("iRODS user lookup did not include %q: %+v", username, user)
 	}
+}
+
+func requireIRODSGroupExists(t *testing.T, ctx context.Context, cfg Config, groupName string) {
+	t.Helper()
+
+	fs := newE2EIRODSFilesystem(t, cfg)
+	defer fs.Release()
+	group, err := fs.GetUser(groupName, cfg.IRODS.Zone, irodstypes.IRODSUserRodsGroup)
+	if err != nil {
+		t.Fatalf("expected iRODS group %q to exist: %v", groupName, err)
+	}
+	if group == nil || group.Name != groupName {
+		t.Fatalf("iRODS group lookup did not include %q: %+v", groupName, group)
+	}
+}
+
+func requireIRODSGroupMember(t *testing.T, ctx context.Context, cfg Config, groupName string, username string, want bool) {
+	t.Helper()
+
+	fs := newE2EIRODSFilesystem(t, cfg)
+	defer fs.Release()
+	for attempt := 0; attempt < 20; attempt++ {
+		members, err := fs.ListGroupMembers(cfg.IRODS.Zone, groupName)
+		present := err == nil && irodsUsersContain(members, username)
+		if present == want {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	members, err := fs.ListGroupMembers(cfg.IRODS.Zone, groupName)
+	t.Fatalf("iRODS group %q member %q presence mismatch: want %t err=%v members=%+v", groupName, username, want, err, members)
+}
+
+func addIRODSMetadata(t *testing.T, ctx context.Context, cfg Config, target string, attribute string, value string) {
+	t.Helper()
+
+	fs := newE2EIRODSFilesystem(t, cfg)
+	defer fs.Release()
+	_ = fs.DeleteUserMetadataByAVU(target, cfg.IRODS.Zone, attribute, value, "")
+	if err := fs.AddUserMetadata(target, cfg.IRODS.Zone, attribute, value, ""); err != nil {
+		t.Fatalf("add iRODS AVU %s=%s to %q: %v", attribute, value, target, err)
+	}
+}
+
+func requireIRODSMetadata(t *testing.T, ctx context.Context, cfg Config, target string, attribute string, value string) {
+	t.Helper()
+
+	for attempt := 0; attempt < 20; attempt++ {
+		if irodsMetadataContains(ctx, cfg, target, attribute, value) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	metadata, err := listIRODSMetadata(ctx, cfg, target)
+	t.Fatalf("iRODS metadata %s=%s not found on %q: %v metadata=%+v", attribute, value, target, err, metadata)
+}
+
+func irodsMetadataContains(ctx context.Context, cfg Config, target string, attribute string, value string) bool {
+	metadata, err := listIRODSMetadata(ctx, cfg, target)
+	if err != nil {
+		return false
+	}
+	for _, entry := range metadata {
+		if entry != nil && entry.Name == attribute && entry.Value == value {
+			return true
+		}
+	}
+	return false
 }
 
 func cleanupIRODSUser(t *testing.T, ctx context.Context, cfg Config, username string) {
@@ -248,41 +340,90 @@ func cleanupIRODSUser(t *testing.T, ctx context.Context, cfg Config, username st
 	if username == "" {
 		return
 	}
-	runIAdmin(t, ctx, cfg, false, "rmuser", username)
+	fs := newE2EIRODSFilesystem(t, cfg)
+	defer fs.Release()
+	_ = fs.RemoveUser(username, cfg.IRODS.Zone, irodstypes.IRODSUserRodsUser)
 }
 
 func cleanupIRODSGroup(t *testing.T, ctx context.Context, cfg Config, groupName string) {
 	t.Helper()
 
-	runIAdmin(t, ctx, cfg, false, "rfg", groupName, cfg.IRODS.PrimaryUser)
-	runIAdmin(t, ctx, cfg, false, "rfg", groupName, cfg.IRODS.SecondaryUser)
-	runIAdmin(t, ctx, cfg, false, "rmgroup", groupName)
+	groupName = strings.TrimSpace(groupName)
+	if groupName == "" {
+		return
+	}
+	fs := newE2EIRODSFilesystem(t, cfg)
+	defer fs.Release()
+	members, err := fs.ListGroupMembers(cfg.IRODS.Zone, groupName)
+	if err == nil {
+		for _, member := range members {
+			if member == nil || member.Name == "" || member.Name == groupName {
+				continue
+			}
+			_ = fs.RemoveGroupMember(groupName, member.Name, cfg.IRODS.Zone)
+		}
+	}
+	adapter := usersyncirodsfs.NewAdapter(fs)
+	_ = adapter.RemoveUserGroup(groupName, cfg.IRODS.Zone)
 }
 
-func runIAdmin(t *testing.T, ctx context.Context, cfg Config, requireSuccess bool, args ...string) {
+func newE2EIRODSFilesystem(t testing.TB, cfg Config) *irodsfs.FileSystem {
 	t.Helper()
 
-	stdout, stderr, err := runIAdminOutput(ctx, cfg, args...)
-	if requireSuccess && err != nil {
-		t.Fatalf("docker iadmin %s failed: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, stdout, stderr)
+	account, err := irodstypes.CreateIRODSAccount(
+		cfg.IRODS.ProviderHost,
+		cfg.IRODS.ProviderPort,
+		cfg.IRODS.AdminUser,
+		cfg.IRODS.Zone,
+		irodstypes.AuthSchemeNative,
+		cfg.IRODS.AdminPassword,
+		cfg.IRODS.ProviderResource,
+	)
+	if err != nil {
+		t.Fatalf("create iRODS account: %v", err)
 	}
+	fs, err := irodsfs.NewFileSystemWithDefault(account, "irods-keycloak-admin-e2e")
+	if err != nil {
+		t.Fatalf("create iRODS filesystem: %v", err)
+	}
+	return fs
 }
 
-func runIAdminOutput(ctx context.Context, cfg Config, args ...string) (string, string, error) {
-	commandArgs := append([]string{
-		"exec",
-		cfg.IRODS.ProviderContainer,
-		"env",
-		"IRODS_ENVIRONMENT_FILE=/root/.irods/irods_environment.json",
-		"iadmin",
-	}, args...)
-	cmd := exec.CommandContext(ctx, "docker", commandArgs...)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	return stdout.String(), stderr.String(), err
+func listIRODSMetadata(ctx context.Context, cfg Config, target string) ([]*irodstypes.IRODSMeta, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	account, err := irodstypes.CreateIRODSAccount(
+		cfg.IRODS.ProviderHost,
+		cfg.IRODS.ProviderPort,
+		cfg.IRODS.AdminUser,
+		cfg.IRODS.Zone,
+		irodstypes.AuthSchemeNative,
+		cfg.IRODS.AdminPassword,
+		cfg.IRODS.ProviderResource,
+	)
+	if err != nil {
+		return nil, err
+	}
+	fs, err := irodsfs.NewFileSystemWithDefault(account, "irods-keycloak-admin-e2e")
+	if err != nil {
+		return nil, err
+	}
+	defer fs.Release()
+	return fs.ListUserMetadata(target, cfg.IRODS.Zone)
+}
+
+func irodsUsersContain(users []*irodstypes.IRODSUser, username string) bool {
+	for _, user := range users {
+		if user != nil && user.Name == username {
+			return true
+		}
+	}
+	return false
+}
+
+func isE2EUserNotFound(err error) bool {
+	return irodstypes.IsUserNotFoundError(err) || irodstypes.GetIRODSErrorCode(err) == common.CAT_NO_ROWS_FOUND
 }
 
 func requireOperation(t *testing.T, plan domain.SyncPlan, action string, target string) domain.PlanOperation {
@@ -422,6 +563,16 @@ func cleanupKeycloakGroup(t *testing.T, ctx context.Context, client *e2eKeycloak
 	t.Helper()
 
 	group, err := client.findMirrorGroup(ctx, cfg, groupName)
+	if err != nil || group == nil {
+		return
+	}
+	_ = client.doJSON(ctx, http.MethodDelete, client.adminPath(cfg.Keycloak.Realm, "groups", group.ID), nil, nil)
+}
+
+func cleanupKeycloakGroupByPath(t *testing.T, ctx context.Context, client *e2eKeycloakClient, cfg Config, groupPath string) {
+	t.Helper()
+
+	group, err := client.findGroupByPath(ctx, cfg.Keycloak.Realm, groupPath)
 	if err != nil || group == nil {
 		return
 	}

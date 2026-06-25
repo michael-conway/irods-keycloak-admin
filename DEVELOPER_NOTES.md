@@ -229,9 +229,17 @@ x8. Add tests before widening behavior.
   Keycloak user, plans `sync --dry-run --target=irods --keycloak-user-id ...`,
   applies the generated plan, verifies the iRODS user exists, replays the plan
   idempotently, and confirms a follow-up plan converges.
-- E2E expansion remains intentionally narrow. This slice adds live iRODS user
-  creation coverage only; live group and membership iRODS mutation coverage
-  should wait until the first iRODS mutation slice remains stable.
+- Focused live coverage now also includes selected Keycloak group provisioning
+  into iRODS and selected-group membership add/remove drift through
+  `sync --dry-run --target=irods --keycloak-group-id ...` plus
+  `apply --plan ...`.
+- The integrated `--password-action-report` CLI path is covered by live e2e
+  setup and verifies the separate report file is written without credential
+  material.
+- The iRODS-to-Keycloak user-create e2e now verifies the post-create iRODS AVU
+  sync that records the assigned Keycloak user ID.
+- E2E expansion remains intentionally focused on exit-criteria workflows rather
+  than broad matrix coverage.
 
 #### Resolved First-Wave Decisions
 
@@ -454,7 +462,7 @@ Examples:
 - LDAP-backed Keycloak plus PAM-backed iRODS.
 - iRODS native auth with Keycloak password self-service.
 - Keycloak authenticating directly against iRODS.
-- REST-only portal mode with no human iCommands.
+- REST-only portal mode with no human direct iRODS login.
 - Service-account / machine-client access.
 - Brownfield bootstrap from existing iRODS users and groups.
 
@@ -531,8 +539,8 @@ If a local type needs to expose an iRODS user, group, AVU, ACL, or quota, it
 should embed, reference, or translate from the canonical `go-irodsclient` type
 instead of duplicating the fields as a new domain model.
 
-Direct user/group administration tools also already exist through iCommands,
-gocommands, and `go-irodsclient`. The command-line surface in this project
+Direct user/group administration tools also already exist through gocommands
+and `go-irodsclient`. The command-line surface in this project
 should focus on planning, applying, bootstrapping, repairing, and diagnosing
 Keycloak/iRODS synchronization rather than recreating generic iRODS admin
 commands.
@@ -970,7 +978,7 @@ Primary surface:
 ```text
 These operations should be implemented as Go service/API capabilities surfaced
 inside Keycloak or admin portals, not primarily as new command-line group tools.
-Existing iRODS tools such as iCommands and gocommands already cover direct
+Existing iRODS tools such as gocommands and go-irodsclient already cover direct
 iRODS group administration.
 ```
 
@@ -1131,7 +1139,7 @@ Flow:
 Important limitation:
 
 ```text
-iCommands do not automatically work with OIDC in this mode.
+Native iRODS clients do not automatically work with OIDC in this mode.
 ```
 
 Access path support:
@@ -1139,8 +1147,8 @@ Access path support:
 | Access path | Supported? |
 |---|---:|
 | REST/web via Keycloak OIDC | yes |
-| iCommands native login | no, unless user also has native/PAM auth |
-| iCommands via future OIDC plugin | possible future scenario |
+| Native iRODS login | no, unless user also has native/PAM auth |
+| Native client OIDC plugin | possible future scenario |
 | service-account/proxy operations | yes, if carefully audited |
 
 Toolkit profile:
@@ -1182,7 +1190,7 @@ Flow:
 4. REST service maps token identity to iRODS user.
 5. iRODS user exists and is expected to authenticate through PAM LDAP.
 6. iRODS groups/ACLs authorize data.
-7. iCommands can use PAM LDAP directly, outside Keycloak.
+7. Native iRODS clients can use PAM LDAP directly, outside Keycloak.
 
 Provisioning variants:
 
@@ -1275,7 +1283,7 @@ Pros:
 
 - Familiar Keycloak login.
 - REST/web OIDC works naturally.
-- iCommands native auth can use same password.
+- Native iRODS auth can use same password.
 
 Cons:
 
@@ -1339,7 +1347,7 @@ Flow:
 3. If valid, Keycloak creates/updates local user representation.
 4. Keycloak issues OIDC token to REST/web clients.
 5. REST services map token to iRODS user.
-6. iCommands continue to use iRODS native auth directly.
+6. Native iRODS clients continue to use iRODS native auth directly.
 
 Password self-service:
 
@@ -1366,7 +1374,7 @@ capabilities:
 
 ## Additional Scenarios
 
-### Scenario 5: Keycloak-only REST, no human iCommands
+### Scenario 5: Keycloak-only REST, no human direct iRODS login
 
 Architecture:
 
@@ -1549,7 +1557,7 @@ Package responsibilities:
 | `internal/httpapi` | Versioned `/admin/v1` routing, JSON DTOs, request validation, response/error mapping. |
 | `internal/service` | Application service interfaces used by HTTP handlers and CLIs. |
 | `internal/domain` | Local control-plane models only: plans, operation records, mirror state summaries, audit records. Do not duplicate iRODS domain structs. |
-| `internal/irodsadapter` | Direct iRODS boundary over `go-irodsclient` and `go-irodsclient-extensions/usersync`. Owns connection setup, uses shared iCommands/gocmd environment state, reuses upstream iRODS domain types, and converts direct-library errors into local service errors. It must not call `irods-go-rest`. |
+| `internal/irodsadapter` | Direct iRODS boundary over `go-irodsclient` and `go-irodsclient-extensions/usersync`. Owns direct connection setup, reuses upstream iRODS domain types, and converts direct-library errors into local service errors. It must not call `irods-go-rest`. |
 | `internal/keycloakadmin` | Keycloak Admin REST client for users, groups, attributes, realm/client metadata, and service-account checks. |
 | `internal/mapper` | Deterministic mapping from Keycloak realm/user/group claims to iRODS username, zone, and group name. Detects collisions. |
 | `internal/reconcile` | Reads iRODS and Keycloak snapshots, compares state, and emits desired operations. |
@@ -1734,7 +1742,7 @@ Non-responsibilities:
 - Redefine `types.IRODSUser`, `types.IRODSMeta`, `types.IRODSAccess`, or
   related iRODS domain types.
 - Rebuild generic iRODS user/group management commands already present in
-  iCommands, gocommands, and `go-irodsclient`.
+  gocommands and `go-irodsclient`.
 
 Example commands:
 
@@ -1945,9 +1953,9 @@ POST   /admin/v1/diagnostics/check-drift
 
 Do not add generic iRODS group mutation routes such as
 `/admin/v1/irods/groups*` to this service. Operator-facing direct iRODS
-administration belongs in `gocmd`/iCommands, while local sync CLIs should call
+administration belongs in existing direct iRODS admin tooling, while local sync CLIs should call
 `internal/irodsadapter`, which owns direct use of `go-irodsclient-extensions/usersync`
-and the shared iCommands-compatible environment. If an operation includes
+through explicit iRODS connection settings. If an operation includes
 Keycloak mirror, approval, sync, repair, bootstrap, event, or diagnostics
 semantics and must be invoked by Keycloak or another service, keep that API in
 `irods-keycloak-admin`.
@@ -2267,13 +2275,13 @@ passwords:
 
 ## Profile Matrix
 
-| Scenario | Password authority | REST auth | iCommands | User provisioning | Group management |
+| Scenario | Password authority | REST auth | Direct iRODS login | User provisioning | Group management |
 |---|---|---|---|---|---|
 | 1. OIDC/SAML federation | upstream IdP | Keycloak OIDC | not unless separate auth | Keycloak/self-service -> iRODS | iRODS-first admin tool |
 | 2. LDAP + PAM | LDAP | Keycloak OIDC | PAM LDAP | Keycloak/approval -> iRODS PAM user | iRODS-first admin tool |
 | 3. Native + KC password self-service | Keycloak+iRODS mirrored | Keycloak OIDC | iRODS native | Keycloak/iRODS | iRODS-first admin tool |
 | 4. KC authenticates against iRODS | iRODS native | Keycloak OIDC | iRODS native | iRODS -> Keycloak mirror | iRODS-first admin tool |
-| 5. REST-only portal | upstream/Keycloak | Keycloak OIDC | no human iCommands | self-service/approval | iRODS-first admin tool |
+| 5. REST-only portal | upstream/Keycloak | Keycloak OIDC | no human direct login | self-service/approval | iRODS-first admin tool |
 | 6. Machine clients | Keycloak client creds | Keycloak OIDC | service only | explicit service mapping | explicit only |
 
 ---

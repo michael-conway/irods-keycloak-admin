@@ -39,7 +39,10 @@ func (s *Service) readIRODSUserSnapshot(ctx context.Context, zone string) (map[s
 
 	snapshot := make(map[string]irodsUserSnapshot, len(users))
 	for _, user := range users {
-		userSnapshot, ok := buildIRODSUserSnapshot(zone, user)
+		userSnapshot, ok, err := s.buildIRODSUserSnapshot(ctx, zone, user)
+		if err != nil {
+			return nil, err
+		}
 		if !ok {
 			continue
 		}
@@ -48,18 +51,24 @@ func (s *Service) readIRODSUserSnapshot(ctx context.Context, zone string) (map[s
 	return snapshot, nil
 }
 
-func buildIRODSUserSnapshot(zone string, user *irodstypes.IRODSUser) (irodsUserSnapshot, bool) {
+func (s *Service) buildIRODSUserSnapshot(ctx context.Context, zone string, user *irodstypes.IRODSUser) (irodsUserSnapshot, bool, error) {
 	if user == nil {
-		return irodsUserSnapshot{}, false
+		return irodsUserSnapshot{}, false, nil
 	}
 	username := strings.TrimSpace(user.Name)
 	if username == "" {
-		return irodsUserSnapshot{}, false
+		return irodsUserSnapshot{}, false, nil
+	}
+	userZone := stringOrDefault(strings.TrimSpace(user.Zone), zone)
+	metadata, err := s.IRODS.ListUserMetadata(ctx, username, userZone)
+	if err != nil {
+		return irodsUserSnapshot{}, false, err
 	}
 	return irodsUserSnapshot{
 		Username: username,
-		Zone:     stringOrDefault(strings.TrimSpace(user.Zone), zone),
-	}, true
+		Zone:     userZone,
+		Metadata: metadata,
+	}, true, nil
 }
 
 func (s *Service) readIRODSGroupSnapshot(ctx context.Context, zone string) (map[string]irodsGroupSnapshot, error) {

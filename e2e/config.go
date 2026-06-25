@@ -23,7 +23,6 @@ type Config struct {
 type IRODSConfig struct {
 	ProviderHost      string
 	ProviderPort      int
-	ProviderContainer string
 	Zone              string
 	AdminUser         string
 	AdminPassword     string
@@ -64,7 +63,6 @@ func LoadConfig() Config {
 		IRODS: IRODSConfig{
 			ProviderHost:      envString("IRODS_KC_E2E_IRODS_PROVIDER_HOST", "127.0.0.1"),
 			ProviderPort:      envInt("IRODS_KC_E2E_IRODS_PROVIDER_PORT", 1247),
-			ProviderContainer: envString("IRODS_KC_E2E_IRODS_PROVIDER_CONTAINER", "irods-grid-stack-irods-provider-1"),
 			Zone:              envString("IRODS_KC_E2E_IRODS_ZONE", "tempZone"),
 			AdminUser:         envString("IRODS_KC_E2E_IRODS_ADMIN_USER", "rods"),
 			AdminPassword:     envString("IRODS_KC_E2E_IRODS_ADMIN_PASSWORD", "rods"),

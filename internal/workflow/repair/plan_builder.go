@@ -6,14 +6,19 @@ import (
 	"strings"
 	"time"
 
+	irodstypes "github.com/cyverse/go-irodsclient/irods/types"
+
+	"github.com/michael-conway/irods-keycloak-admin/internal/avu"
 	"github.com/michael-conway/irods-keycloak-admin/internal/domain"
 )
 
 const (
-	changeCauseMissingMirrorUser  = "missing_mirror_user"
-	changeCauseMissingMirrorGroup = "missing_mirror_group"
-	changeCauseMembershipDrift    = "membership_drift"
-	changeCauseStaleKeycloakState = "stale_keycloak_state"
+	changeCauseMissingMirrorUser       = "missing_mirror_user"
+	changeCauseMissingMirrorGroup      = "missing_mirror_group"
+	changeCauseMembershipDrift         = "membership_drift"
+	changeCauseStaleKeycloakState      = "stale_keycloak_state"
+	changeCausePostCreateIdentityMap   = "post_create_identity_mapping"
+	keycloakUserIDSourcePostCreateSync = "created_or_resolved_by_previous_operation"
 )
 
 type repairPlanner struct {
@@ -55,7 +60,9 @@ func newRepairPlanner(realm string, zone string, mirrorPolicy mirrorPathPolicy, 
 
 func (p *repairPlanner) build() domain.SyncPlan {
 	for _, username := range sortedKeys(p.irodsUsers) {
-		if _, exists := p.keycloakUsers[username]; exists {
+		keycloakUserID, exists := p.keycloakUsers[username]
+		if exists {
+			p.appendUserMetadataSyncIfNeeded(p.irodsUsers[username], keycloakUserID)
 			continue
 		}
 		p.appendUserCreate(p.irodsUsers[username])
@@ -86,6 +93,45 @@ func (p *repairPlanner) appendUserCreate(irodsUser irodsUserSnapshot) {
 	addSyncModelEvidence(evidence, domain.SyncDirectionIRODSToKeycloak, domain.SyncClassificationCandidateAddition, true)
 	p.plan.Operations = append(p.plan.Operations, newOperation(p.nextOperationID(), domain.PlanActionKeycloakUserCreate, irodsUser.Username, "low", evidence))
 	p.plan.Summary.CreateKeycloakUsers++
+
+	metadataEvidence := map[string]any{
+		"change_cause":              changeCausePostCreateIdentityMap,
+		"irods_username":            irodsUser.Username,
+		"irods_zone":                irodsUser.Zone,
+		"keycloak_realm":            p.realm,
+		"keycloak_username":         irodsUser.Username,
+		"keycloak_user_id_source":   keycloakUserIDSourcePostCreateSync,
+		"missing_avu_attributes":    metadataAttributeNames(postCreateUserDesiredMetadata(p.realm, keycloakUserIDSourcePostCreateSync)),
+		"managed_status_required":   true,
+		"post_create_metadata_sync": true,
+	}
+	addSyncModelEvidence(metadataEvidence, domain.SyncDirectionIRODSToKeycloak, domain.SyncClassificationMappedUpdate, false)
+	p.plan.Operations = append(p.plan.Operations, newOperation(p.nextOperationID(), domain.PlanActionIRODSUserMetadataSync, irodsUser.Username, "low", metadataEvidence))
+	p.plan.Summary.UpdateIRODSUserMetadata++
+}
+
+func (p *repairPlanner) appendUserMetadataSyncIfNeeded(irodsUser irodsUserSnapshot, keycloakUserID string) {
+	keycloakUserID = strings.TrimSpace(keycloakUserID)
+	if keycloakUserID == "" {
+		return
+	}
+	missingMetadata := missingUserMetadata(irodsUser.Metadata, postCreateUserDesiredMetadata(p.realm, keycloakUserID))
+	if len(missingMetadata) == 0 {
+		return
+	}
+	evidence := map[string]any{
+		"change_cause":           changeCausePostCreateIdentityMap,
+		"irods_username":         irodsUser.Username,
+		"irods_zone":             irodsUser.Zone,
+		"keycloak_realm":         p.realm,
+		"keycloak_username":      irodsUser.Username,
+		"keycloak_user_id":       keycloakUserID,
+		"missing_avu_attributes": metadataAttributeNames(missingMetadata),
+		"desired_avus":           metadataEvidence(postCreateUserDesiredMetadata(p.realm, keycloakUserID)),
+	}
+	addSyncModelEvidence(evidence, domain.SyncDirectionIRODSToKeycloak, domain.SyncClassificationMappedUpdate, true)
+	p.plan.Operations = append(p.plan.Operations, newOperation(p.nextOperationID(), domain.PlanActionIRODSUserMetadataSync, irodsUser.Username, "low", evidence))
+	p.plan.Summary.UpdateIRODSUserMetadata++
 }
 
 func (p *repairPlanner) appendIRODSGroupOperations(groupName string, irodsGroup irodsGroupSnapshot, keycloakGroup keycloakGroupSnapshot) {
@@ -218,6 +264,66 @@ func addSyncModelEvidence(evidence map[string]any, direction string, classificat
 	evidence["mapping_identity_known"] = mappingIdentityKnown
 	evidence["authority_role"] = "directional_repair_policy"
 	evidence["conflict_status"] = "none"
+}
+
+func postCreateUserDesiredMetadata(realm string, keycloakUserID string) []*irodstypes.IRODSMeta {
+	return []*irodstypes.IRODSMeta{
+		{Name: avu.ManagedByAttribute, Value: defaultManagedByValue},
+		{Name: avu.KeycloakRealmAttribute, Value: realm},
+		{Name: avu.KeycloakUserIDAttribute, Value: keycloakUserID},
+		{Name: avu.AuthorityAttribute, Value: domain.SyncPlanAuthorityIRODS},
+	}
+}
+
+func missingUserMetadata(current []*irodstypes.IRODSMeta, desired []*irodstypes.IRODSMeta) []*irodstypes.IRODSMeta {
+	missing := []*irodstypes.IRODSMeta{}
+	for _, metadata := range desired {
+		if metadata == nil || strings.TrimSpace(metadata.Name) == "" || strings.TrimSpace(metadata.Value) == "" {
+			continue
+		}
+		if hasMetadataValue(current, metadata.Name, metadata.Value) {
+			continue
+		}
+		missing = append(missing, &irodstypes.IRODSMeta{Name: metadata.Name, Value: metadata.Value, Units: metadata.Units})
+	}
+	return missing
+}
+
+func hasMetadataValue(metadata []*irodstypes.IRODSMeta, name string, value string) bool {
+	name = strings.TrimSpace(name)
+	value = strings.TrimSpace(value)
+	for _, entry := range metadata {
+		if entry == nil {
+			continue
+		}
+		if strings.TrimSpace(entry.Name) == name && strings.TrimSpace(entry.Value) == value {
+			return true
+		}
+	}
+	return false
+}
+
+func metadataAttributeNames(metadata []*irodstypes.IRODSMeta) []string {
+	names := make([]string, 0, len(metadata))
+	for _, entry := range metadata {
+		if entry == nil || strings.TrimSpace(entry.Name) == "" {
+			continue
+		}
+		names = append(names, strings.TrimSpace(entry.Name))
+	}
+	sort.Strings(names)
+	return names
+}
+
+func metadataEvidence(metadata []*irodstypes.IRODSMeta) map[string]string {
+	result := map[string]string{}
+	for _, entry := range metadata {
+		if entry == nil || strings.TrimSpace(entry.Name) == "" {
+			continue
+		}
+		result[strings.TrimSpace(entry.Name)] = strings.TrimSpace(entry.Value)
+	}
+	return result
 }
 
 func newPlanID() string {

@@ -274,7 +274,7 @@ func TestApplyHelpExplainsParameterMeanings(t *testing.T) {
 		"--plan PLAN.json",
 		"--prompts required|all|none",
 		"--keycloak-mirror-root PATH",
-		"--irods-env FILE",
+		"--irods-host HOST, --irods-port PORT",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected apply help to contain %q, got:\n%s", want, rendered)

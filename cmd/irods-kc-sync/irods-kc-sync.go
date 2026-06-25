@@ -65,13 +65,12 @@ func runRepairKeycloak(args []string, stdout io.Writer, stderr io.Writer) int {
 	keycloakGroupID := flags.String("keycloak-group-id", "", "stable Keycloak group UUID to plan into iRODS; valid only with --target=irods and mutually exclusive with --keycloak-user-id")
 	keycloakGroupPath := flags.String("keycloak-group-path", "", "Keycloak group path, such as /projects/alpha, to plan into iRODS; valid only with --target=irods and mutually exclusive with --keycloak-user-id")
 	realm := flags.String("realm", firstNonEmpty(cfg.KeycloakRealm, envFirst("IRODS_KC_E2E_KEYCLOAK_REALM")), "Keycloak realm containing the users/groups to inspect; required if not configured in environment")
-	zone := flags.String("zone", firstNonEmpty(cfg.IRODSZone, envFirst("IRODS_KC_E2E_IRODS_ZONE")), "iRODS zone used for user/group lookup and planned mutations; defaults from config or iCommands environment when possible")
+	zone := flags.String("zone", firstNonEmpty(cfg.IRODSZone, envFirst("IRODS_KC_E2E_IRODS_ZONE")), "iRODS zone used for user/group lookup and planned mutations; required unless provided by configuration/environment")
 
-	irodsEnv := flags.String("irods-env", os.Getenv("IRODS_ENVIRONMENT_FILE"), "iCommands environment file to use when --irods-host is omitted; empty means ~/.irods/irods_environment.json")
-	irodsHost := flags.String("irods-host", envFirst("IRODS_KC_IRODS_HOST", "IRODS_KC_E2E_IRODS_PROVIDER_HOST"), "iRODS provider host for direct admin connection; when set, direct iRODS connection flags are used instead of iCommands environment")
+	irodsHost := flags.String("irods-host", envFirst("IRODS_KC_IRODS_HOST", "IRODS_KC_E2E_IRODS_PROVIDER_HOST"), "iRODS provider host for direct admin connection")
 	irodsPort := flags.Int("irods-port", envInt(0, "IRODS_KC_IRODS_PORT", "IRODS_KC_E2E_IRODS_PROVIDER_PORT"), "iRODS provider port for direct admin connection; required with --irods-host unless provided by environment")
 	irodsUser := flags.String("irods-user", envFirst("IRODS_KC_IRODS_USER", "IRODS_KC_IRODS_ADMIN_USER", "IRODS_KC_E2E_IRODS_ADMIN_USER"), "iRODS admin username for direct connection; must be allowed to create users/groups, change group membership, and write mapping AVUs")
-	irodsPassword := flags.String("irods-password", envFirst("IRODS_KC_IRODS_PASSWORD", "IRODS_KC_IRODS_ADMIN_PASSWORD", "IRODS_KC_E2E_IRODS_ADMIN_PASSWORD"), "iRODS password for --irods-user when using direct connection; ignored when using iCommands environment")
+	irodsPassword := flags.String("irods-password", envFirst("IRODS_KC_IRODS_PASSWORD", "IRODS_KC_IRODS_ADMIN_PASSWORD", "IRODS_KC_E2E_IRODS_ADMIN_PASSWORD"), "iRODS password for --irods-user")
 	irodsResource := flags.String("irods-resource", envFirst("IRODS_KC_IRODS_RESOURCE", "IRODS_KC_E2E_IRODS_PROVIDER_RESOURCE"), "default iRODS resource for direct connection; used for account initialization, not for sync policy")
 
 	keycloakURL := flags.String("keycloak-url", envFirst("IRODS_KC_KEYCLOAK_BASE_URL", "IRODS_KC_E2E_KEYCLOAK_BASE_URL"), "Keycloak base URL, for example https://keycloak.example.org; defaults to https://127.0.0.1:8443 if unset")
@@ -123,7 +122,7 @@ func runRepairKeycloak(args []string, stdout io.Writer, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	irodsClient, account, err := newIRODSClient(*irodsEnv, irodsadapter.ConnectionConfig{
+	irodsClient, account, err := newIRODSClient(irodsadapter.ConnectionConfig{
 		Host:            *irodsHost,
 		Port:            *irodsPort,
 		Zone:            firstNonEmpty(*zone, cfg.IRODSZone),
@@ -141,7 +140,7 @@ func runRepairKeycloak(args []string, stdout io.Writer, stderr io.Writer) int {
 		*zone = account.ClientZone
 	}
 	if strings.TrimSpace(*zone) == "" {
-		_, _ = fmt.Fprintln(stderr, "iRODS zone is required; pass --zone ZONE to identify the iRODS zone for lookup/mutation, or initialize an iCommands environment that defines irods_zone_name")
+		_, _ = fmt.Fprintln(stderr, "iRODS zone is required; pass --zone ZONE or set IRODS_KC_IRODS_ZONE")
 		return 2
 	}
 
@@ -241,7 +240,6 @@ func runApply(args []string, stdout io.Writer, stderr io.Writer) int {
 	zone := flags.String("zone", firstNonEmpty(cfg.IRODSZone, envFirst("IRODS_KC_E2E_IRODS_ZONE")), "expected iRODS zone for the plan; defaults to the plan zone when omitted and no environment value is set")
 	prompts := flags.String("prompts", string(planreview.PromptModeRequired), "review prompt policy: required prompts only for risky operations, all prompts for every operation, none applies without interactive confirmation")
 
-	irodsEnv := flags.String("irods-env", os.Getenv("IRODS_ENVIRONMENT_FILE"), "iCommands environment file to use for iRODS-target plans when --irods-host is omitted; empty means ~/.irods/irods_environment.json")
 	irodsHost := flags.String("irods-host", envFirst("IRODS_KC_IRODS_HOST", "IRODS_KC_E2E_IRODS_PROVIDER_HOST"), "iRODS provider host for direct admin connection; used only when applying iRODS-target plans")
 	irodsPort := flags.Int("irods-port", envInt(0, "IRODS_KC_IRODS_PORT", "IRODS_KC_E2E_IRODS_PROVIDER_PORT"), "iRODS provider port for direct admin connection; used only when applying iRODS-target plans")
 	irodsUser := flags.String("irods-user", envFirst("IRODS_KC_IRODS_USER", "IRODS_KC_IRODS_ADMIN_USER", "IRODS_KC_E2E_IRODS_ADMIN_USER"), "iRODS admin username for applying iRODS-target plans")
@@ -297,7 +295,7 @@ func runApply(args []string, stdout io.Writer, stderr io.Writer) int {
 		planTarget = domain.SyncTargetKeycloak
 	}
 	if planTarget == domain.SyncTargetIRODS {
-		irodsClient, account, err := newIRODSClient(*irodsEnv, irodsadapter.ConnectionConfig{
+		irodsClient, account, err := newIRODSClient(irodsadapter.ConnectionConfig{
 			Host:            *irodsHost,
 			Port:            *irodsPort,
 			Zone:            firstNonEmpty(*zone, cfg.IRODSZone),
@@ -364,6 +362,26 @@ func runApply(args []string, stdout io.Writer, stderr io.Writer) int {
 		MirrorRoot:   *keycloakMirrorRoot,
 		PromptMode:   promptMode,
 	}
+	if planRequiresIRODSApplyClient(syncPlan) {
+		irodsClient, account, err := newIRODSClient(irodsadapter.ConnectionConfig{
+			Host:            *irodsHost,
+			Port:            *irodsPort,
+			Zone:            firstNonEmpty(*zone, cfg.IRODSZone),
+			Username:        *irodsUser,
+			Password:        *irodsPassword,
+			DefaultResource: *irodsResource,
+		})
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "initialize iRODS client: %v\n", err)
+			return 1
+		}
+		defer irodsClient.Close()
+		if strings.TrimSpace(*zone) == "" && account != nil {
+			*zone = account.ClientZone
+			service.DefaultZone = *zone
+		}
+		service.IRODS = irodsClient
+	}
 	if promptMode != planreview.PromptModeNone {
 		service.Reviewer = newTerminalReviewer(os.Stdin, stderr)
 	}
@@ -388,12 +406,17 @@ func runApply(args []string, stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
-func newIRODSClient(envFile string, cfg irodsadapter.ConnectionConfig) (*irodsadapter.FileSystemClient, *irodstypes.IRODSAccount, error) {
-	if strings.TrimSpace(cfg.Host) != "" {
-		client, account, err := irodsadapter.NewFromConnectionConfig(cfg, appName)
-		return client, account, err
+func planRequiresIRODSApplyClient(syncPlan domain.SyncPlan) bool {
+	for _, operation := range syncPlan.Operations {
+		if operation.Action == domain.PlanActionIRODSUserMetadataSync {
+			return true
+		}
 	}
-	client, account, err := irodsadapter.NewFromICommandsEnvironment(envFile, appName)
+	return false
+}
+
+func newIRODSClient(cfg irodsadapter.ConnectionConfig) (*irodsadapter.FileSystemClient, *irodstypes.IRODSAccount, error) {
+	client, account, err := irodsadapter.NewFromConnectionConfig(cfg, appName)
 	return client, account, err
 }
 
@@ -563,17 +586,15 @@ func syncUsage(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "  --realm REALM")
 	_, _ = fmt.Fprintln(out, "      Keycloak realm to inspect. Required unless supplied by configuration/environment.")
 	_, _ = fmt.Fprintln(out, "  --zone ZONE")
-	_, _ = fmt.Fprintln(out, "      iRODS zone for lookup and planned mutations. May come from iCommands environment.")
+	_, _ = fmt.Fprintln(out, "      iRODS zone for lookup and planned mutations.")
 	_, _ = fmt.Fprintln(out, "  --out PLAN.json")
 	_, _ = fmt.Fprintln(out, "      Also write the stdout plan JSON to a file.")
 	_, _ = fmt.Fprintln(out, "  --plan-path PLAN.json")
 	_, _ = fmt.Fprintln(out, "      Deprecated alias for --out.")
 	_, _ = fmt.Fprintln(out, "  --password-action-report REPORT.json")
 	_, _ = fmt.Fprintln(out, "      Scenario-3 credential report derived from user operations; reporting only.")
-	_, _ = fmt.Fprintln(out, "  --irods-env FILE")
-	_, _ = fmt.Fprintln(out, "      iCommands environment file when not using direct --irods-host connection.")
 	_, _ = fmt.Fprintln(out, "  --irods-host HOST, --irods-port PORT, --irods-user USER, --irods-password PASSWORD, --irods-resource RESOURCE")
-	_, _ = fmt.Fprintln(out, "      Direct iRODS admin connection parameters used instead of iCommands environment.")
+	_, _ = fmt.Fprintln(out, "      Direct iRODS admin connection parameters.")
 	_, _ = fmt.Fprintln(out, "  --keycloak-url URL")
 	_, _ = fmt.Fprintln(out, "      Keycloak base URL.")
 	_, _ = fmt.Fprintln(out, "  --keycloak-admin-realm REALM")
@@ -609,8 +630,6 @@ func applyUsage(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "  --prompts required|all|none")
 	_, _ = fmt.Fprintln(out, "      Interactive review policy: required prompts only for risky operations,")
 	_, _ = fmt.Fprintln(out, "      all prompts for every operation, none applies without interactive confirmation.")
-	_, _ = fmt.Fprintln(out, "  --irods-env FILE")
-	_, _ = fmt.Fprintln(out, "      iCommands environment file for iRODS-target plans when --irods-host is omitted.")
 	_, _ = fmt.Fprintln(out, "  --irods-host HOST, --irods-port PORT, --irods-user USER, --irods-password PASSWORD, --irods-resource RESOURCE")
 	_, _ = fmt.Fprintln(out, "      Direct iRODS admin connection parameters for iRODS-target plans.")
 	_, _ = fmt.Fprintln(out, "  --keycloak-url URL")

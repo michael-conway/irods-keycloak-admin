@@ -833,6 +833,10 @@ func (f *fakeIRODSClient) CreateUser(_ context.Context, username string, zone st
 	return user, nil
 }
 
+func (f *fakeIRODSClient) CreateGroup(ctx context.Context, groupName string, zone string) (*irodstypes.IRODSUser, error) {
+	return f.CreateUser(ctx, groupName, zone, irodstypes.IRODSUserRodsGroup)
+}
+
 func (f *fakeIRODSClient) RemoveUser(context.Context, string, string, irodstypes.IRODSUserType) error {
 	return nil
 }
