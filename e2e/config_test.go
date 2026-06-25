@@ -8,7 +8,7 @@ func TestLoadConfigDefaultsMatchGridStackHostPorts(t *testing.T) {
 	if cfg.IRODS.ProviderHost != "127.0.0.1" || cfg.IRODS.ProviderPort != 1247 {
 		t.Fatalf("unexpected iRODS provider endpoint: %+v", cfg.IRODS)
 	}
-	if cfg.IRODS.ProviderContainer != "irods-keycloak-admin-e2e-irods-provider-1" {
+	if cfg.IRODS.ProviderContainer != "irods-grid-stack-irods-provider-1" {
 		t.Fatalf("unexpected iRODS provider container: %q", cfg.IRODS.ProviderContainer)
 	}
 	if cfg.REST.ProviderBaseURL != "http://127.0.0.1:8080" {

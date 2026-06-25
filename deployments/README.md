@@ -1,41 +1,112 @@
-# Disposable iRODS + Keycloak Test Environment
+# Disposable Keycloak Test Environment
 
-This directory contains a local Docker Compose environment for integration and
-e2e testing of `irods-keycloak-admin`.
+This directory contains the `irods-keycloak-admin` side of the local integration
+and e2e test environment.
 
-The stack starts only the services needed by this repository:
+The deployment is intentionally Keycloak-only. iRODS, optional `irods-go-rest`,
+and optional Starbase services should be started from `irods-grid-stack`.
 
-- PostgreSQL for iRODS ICAT and Keycloak.
-- iRODS 5.x catalog provider.
-- Keycloak with an imported test realm.
-- Optional provider-side and resource-port-compatible `irods-go-rest`
-  services under the `rest` profile.
+This stack starts only:
 
-It intentionally does not start application services or storage gateway
-containers.
+- A dedicated PostgreSQL database for Keycloak.
+- Keycloak with the imported `irods` test realm.
 
-## Start The Stack
+It does not start an iRODS catalog provider, iRODS ICAT database, REST API, web
+frontend, or storage gateway containers. This allows it to run alongside
+`irods-grid-stack` without competing for iRODS, REST, or ICAT database ports and
+volumes.
+
+## Migration Model
+
+Use two Compose projects:
+
+- `irods-grid-stack` owns iRODS, the iRODS ICAT database, optional REST, and
+  optional Starbase.
+- `irods-keycloak-admin` owns Keycloak and a separate Keycloak PostgreSQL
+  database.
+
+Start `irods-grid-stack` without its frontend or Keycloak profiles. Enable the
+REST and Starbase profiles there when tests need those services.
+
+Then start this stack to provide the Keycloak realm used by
+`irods-keycloak-admin` tests.
+
+Both stacks expose the same host endpoint contract used by the e2e environment
+files:
+
+| Service | Owner | Default endpoint |
+|---|---|---|
+| iRODS provider | `irods-grid-stack` | `127.0.0.1:1247` |
+| Provider REST | `irods-grid-stack` | `http://127.0.0.1:8080` |
+| Resource REST | `irods-grid-stack` | `http://127.0.0.1:8082` |
+| Starbase | `irods-grid-stack` | configured by `irods-grid-stack` |
+| Keycloak | `irods-keycloak-admin` | `https://127.0.0.1:8443` |
+| Keycloak management | `irods-keycloak-admin` | `http://127.0.0.1:19090` |
+
+## Start iRODS Dependencies
+
+From the `irods-grid-stack` repository, start iRODS and any optional services
+needed by the test run. Do not enable that stack's frontend or Keycloak
+profiles.
+
+Example:
+
+```bash
+cd ../irods-grid-stack
+docker compose --profile rest --profile starbase up -d --build
+```
+
+If a test only needs iRODS, omit optional profiles as appropriate.
+
+## Start Keycloak
 
 ```bash
 cd deployments/docker-test-framework/5-0
 docker compose up -d --build
 ```
 
-Start the optional REST endpoints with the same host ports used by
+Key endpoints and credentials:
+
+| Service | Value |
+|---|---|
+| Keycloak admin console | `https://localhost:8443/admin` |
+| Keycloak management | `http://127.0.0.1:19090` |
+| Keycloak admin | `admin` / `admin` |
+| Keycloak realm | `irods` |
+| Admin API client | `irods-kc-admin-api` |
+| Admin CLI client | `irods-kc-admin-cli` / `irods-kc-admin-cli-secret` |
+| Keycloak database | `KEYCLOAK` |
+| Keycloak database user | `keycloak` / `keycloak` |
+
+The imported Keycloak realm is intentionally minimal. It provides fixture users,
+fixture groups, and confidential clients suitable for exercising the
+`irods-keycloak-admin` control-plane API and CLI workflows.
+
+The Keycloak fixture groups mirror groups expected from `irods-grid-stack`:
+
+- `project-alpha`
+- `project-beta`
+- `irods-admins`
+
+## Run E2E Tests
+
+Use the `grid-stack` e2e environment because iRODS and REST now come from
 `irods-grid-stack`:
 
 ```bash
-cd deployments/docker-test-framework/5-0
-docker compose --profile rest up -d --build
+set -a
+. e2e/config/grid-stack.env
+set +a
+go test ./e2e
 ```
 
-Key endpoints and credentials:
+The endpoint defaults remain:
 
 | Service | Value |
 |---|---|
 | iRODS host | `localhost:1247` |
 | Provider REST | `http://127.0.0.1:8080` |
-| Resource REST compatibility endpoint | `http://127.0.0.1:8082` |
+| Resource REST | `http://127.0.0.1:8082` |
 | iRODS zone | `tempZone` |
 | iRODS provider resource | `providerResc` |
 | iRODS admin | `rods` / `rods` |
@@ -43,69 +114,35 @@ Key endpoints and credentials:
 | iRODS test users | `test2` / `test`, `test3` / `test` |
 | Keycloak admin console | `https://localhost:8443/admin` |
 | Keycloak management | `http://127.0.0.1:19090` |
-| Keycloak admin | `admin` / `admin` |
-| Keycloak realm | `irods` |
-| Admin API client | `irods-kc-admin-api` |
-| Admin CLI client | `irods-kc-admin-cli` / `irods-kc-admin-cli-secret` |
-
-The iRODS setup creates test groups that are mirrored in the Keycloak realm:
-
-- `project-alpha`
-- `project-beta`
-- `irods-admins`
 
 ## Reset The Stack
 
-The environment is disposable. Remove containers and volumes with:
+The Keycloak environment is disposable. Remove its containers and Keycloak
+database volume with:
 
 ```bash
 cd deployments/docker-test-framework/5-0
 docker compose down -v
 ```
 
+Reset `irods-grid-stack` separately when the iRODS or REST state needs to be
+discarded.
+
 ## Smoke Checks
 
-Check iRODS:
+Check the iRODS and REST services from `irods-grid-stack`:
 
 ```bash
-docker compose exec irods-provider su - irods -c 'iadmin lu'
-docker compose exec irods-provider su - irods -c 'iadmin lg project-alpha'
+docker ps --filter name=irods-grid-stack-irods-provider
+curl -k http://127.0.0.1:8080/healthz
+curl -k http://127.0.0.1:8082/healthz
 ```
 
-Check Keycloak:
+Check this stack's Keycloak service:
 
 ```bash
 docker compose ps keycloak
 ```
 
-Check REST when the `rest` profile is enabled:
-
-```bash
-curl -k http://127.0.0.1:8080/healthz
-curl -k http://127.0.0.1:8082/healthz
-```
-
 Open the admin console at `https://localhost:8443/admin` and inspect the
 `irods` realm.
-
-## Notes
-
-The imported Keycloak realm is intentionally minimal. It provides fixture users,
-fixture groups, and confidential clients suitable for exercising the
-`irods-keycloak-admin` control-plane API and future CLI workflows.
-
-The service names and default host ports intentionally match
-`irods-grid-stack` for the provider-side endpoints:
-
-- `irods-provider` on host port `1247`.
-- `irods-go-rest-provider` on host port `8080`.
-- `irods-go-rest-resource` on host port `8082`.
-- `keycloak` on host port `8443`, with management on `19090`.
-
-Unlike `irods-grid-stack`, this repository's internal deployment does not start
-a second iRODS resource server. The `irods-go-rest-resource` service is a
-port/name compatibility endpoint backed by `irods-provider`, which is sufficient
-for keycloak-admin integration tests that only need stable REST endpoint names.
-
-This lets e2e and integration tests source either `e2e/config/internal.env` or
-`e2e/config/grid-stack.env` and exercise the same endpoint contract.

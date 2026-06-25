@@ -237,6 +237,100 @@ func TestNormalizeSyncTarget(t *testing.T) {
 	}
 }
 
+func TestSyncHelpExplainsParameterMeanings(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run([]string{"sync", "--help"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("expected help exit code 0, got %d; stderr:\n%s", code, stderr.String())
+	}
+	rendered := stderr.String()
+	for _, want := range []string{
+		"Target modes:",
+		"--target=keycloak mirrors authoritative iRODS",
+		"--target=irods requires exactly one selector",
+		"--password-action-report REPORT.json",
+		"--irods-host HOST, --irods-port PORT",
+		"--keycloak-client-id ID, --keycloak-client-secret SECRET",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected sync help to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestApplyHelpExplainsParameterMeanings(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run([]string{"apply", "--help"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("expected help exit code 0, got %d; stderr:\n%s", code, stderr.String())
+	}
+	rendered := stderr.String()
+	for _, want := range []string{
+		"Apply a reviewed JSON plan",
+		"--plan PLAN.json",
+		"--prompts required|all|none",
+		"--keycloak-mirror-root PATH",
+		"--irods-env FILE",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected apply help to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestValidationErrorsExplainParameterMeaning(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "sync requires dry run",
+			args: []string{"sync"},
+			want: "pass --dry-run to generate a reviewable JSON plan",
+		},
+		{
+			name: "invalid target explains choices",
+			args: []string{"sync", "--dry-run", "--target", "both"},
+			want: "keycloak mirrors iRODS into Keycloak",
+		},
+		{
+			name: "irods target requires selector",
+			args: []string{"sync", "--dry-run", "--target", "irods", "--realm", "irods"},
+			want: "pass --keycloak-user-id USER_ID, --keycloak-group-id GROUP_ID, or --keycloak-group-path GROUP_PATH",
+		},
+		{
+			name: "apply requires plan",
+			args: []string{"apply"},
+			want: "JSON plan created by 'irods-kc-sync sync --dry-run'",
+		},
+		{
+			name: "apply rejects positional arguments",
+			args: []string{"apply", "plan.json"},
+			want: "apply accepts only named flags",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			code := run(tt.args, &stdout, &stderr)
+			if code == 0 {
+				t.Fatal("expected non-zero exit code")
+			}
+			if !strings.Contains(stderr.String(), tt.want) {
+				t.Fatalf("expected stderr to contain %q, got:\n%s", tt.want, stderr.String())
+			}
+		})
+	}
+}
+
 func TestValidateIRODSSyncSelector(t *testing.T) {
 	tests := []struct {
 		name              string

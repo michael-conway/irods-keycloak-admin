@@ -338,31 +338,23 @@ Run all package tests:
 go test ./...
 ```
 
-Run e2e tests against the internal disposable deployment:
-
-```bash
-cd deployments/docker-test-framework/5-0
-docker compose --profile rest up -d --build
-cd ../../..
-set -a
-. e2e/config/internal.env
-set +a
-go test ./e2e
-```
-
-Run e2e tests against `irods-grid-stack`:
+Run e2e tests against `irods-grid-stack` plus the Keycloak-only disposable
+deployment:
 
 ```bash
 cd ../irods-grid-stack
-docker compose --profile rest up -d --build
+docker compose --profile rest --profile starbase up -d --build
 cd ../irods-keycloak-admin
+cd deployments/docker-test-framework/5-0
+docker compose up -d --build
+cd ../../..
 set -a
 . e2e/config/grid-stack.env
 set +a
 go test ./e2e
 ```
 
-The two e2e environments intentionally share the same endpoint contract.
+The e2e endpoint contract is documented in `e2e/README.md`.
 
 ## References
 

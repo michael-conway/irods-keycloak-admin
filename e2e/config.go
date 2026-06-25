@@ -60,11 +60,11 @@ type FixtureConfig struct {
 func LoadConfig() Config {
 	return Config{
 		Enabled: envBool("IRODS_KC_E2E_ENABLED", false),
-		Target:  envString("IRODS_KC_E2E_TARGET", "internal"),
+		Target:  envString("IRODS_KC_E2E_TARGET", "grid-stack"),
 		IRODS: IRODSConfig{
 			ProviderHost:      envString("IRODS_KC_E2E_IRODS_PROVIDER_HOST", "127.0.0.1"),
 			ProviderPort:      envInt("IRODS_KC_E2E_IRODS_PROVIDER_PORT", 1247),
-			ProviderContainer: envString("IRODS_KC_E2E_IRODS_PROVIDER_CONTAINER", "irods-keycloak-admin-e2e-irods-provider-1"),
+			ProviderContainer: envString("IRODS_KC_E2E_IRODS_PROVIDER_CONTAINER", "irods-grid-stack-irods-provider-1"),
 			Zone:              envString("IRODS_KC_E2E_IRODS_ZONE", "tempZone"),
 			AdminUser:         envString("IRODS_KC_E2E_IRODS_ADMIN_USER", "rods"),
 			AdminPassword:     envString("IRODS_KC_E2E_IRODS_ADMIN_PASSWORD", "rods"),

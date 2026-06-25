@@ -1,11 +1,13 @@
 # e2e Configuration
 
-The e2e tests use one environment contract for both local deployments:
+The e2e tests use a two-stack local environment:
 
-- `deployments/docker-test-framework/5-0`
-- `irods-grid-stack`
+- `irods-grid-stack` provides iRODS, optional `irods-go-rest`, and optional
+  Starbase.
+- `deployments/docker-test-framework/5-0` provides Keycloak and a dedicated
+  Keycloak PostgreSQL database.
 
-Both targets should expose the same host endpoints:
+The combined environment should expose these host endpoints:
 
 | Service | Default |
 |---|---|
@@ -15,14 +17,27 @@ Both targets should expose the same host endpoints:
 | Keycloak | `https://127.0.0.1:8443` |
 | Keycloak management | `http://127.0.0.1:19090` |
 
-Run against the internal deployment:
+Start `irods-grid-stack` without its frontend or Keycloak profiles. Enable REST
+and Starbase there when tests need them:
 
 ```bash
-cd deployments/docker-test-framework/5-0
-docker compose --profile rest up -d --build
+cd ../irods-grid-stack
+docker compose --profile rest --profile starbase up -d --build
+```
+
+Start the Keycloak-only deployment from this repository:
+
+```bash
+cd ../irods-keycloak-admin/deployments/docker-test-framework/5-0
+docker compose up -d --build
+```
+
+Run the e2e tests:
+
+```bash
 cd ../../..
 set -a
-. e2e/config/internal.env
+. e2e/config/grid-stack.env
 set +a
 go test ./e2e
 ```
@@ -31,18 +46,6 @@ Run only the live apply coverage:
 
 ```bash
 go test ./e2e -run 'TestKCSyncApply' -count=1 -v
-```
-
-Run against `irods-grid-stack`:
-
-```bash
-cd ../irods-grid-stack
-docker compose --profile rest up -d --build
-cd ../irods-keycloak-admin
-set -a
-. e2e/config/grid-stack.env
-set +a
-go test ./e2e
 ```
 
 Tests should call `RequireConfig(t)` before touching live services. Unit tests
@@ -56,8 +59,8 @@ mutation through `irods-kc-sync apply`; iRODS fixture setup and cleanup still us
 `iadmin`. The apply coverage also replays the same plan after convergence to
 verify repeat apply behavior.
 
-Some live fixture setup uses `docker exec` against the iRODS provider container
-to run the same `iadmin` operations used by the disposable stack setup scripts.
+Some live fixture setup uses `docker exec` against the `irods-grid-stack` iRODS
+provider container to run `iadmin` operations.
 Override `IRODS_KC_E2E_IRODS_PROVIDER_CONTAINER` when the compose project or
 provider service name differs from the defaults.
 
