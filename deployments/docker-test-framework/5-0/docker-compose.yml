@@ -6,16 +6,17 @@ services:
     platform: linux/amd64
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-keycloak}
+      POSTGRES_DB: ${KEYCLOAK_DB_NAME:-KEYCLOAK}
+      POSTGRES_USER: ${KEYCLOAK_DB_USER:-keycloak}
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-keycloak}
       KEYCLOAK_DB_NAME: ${KEYCLOAK_DB_NAME:-KEYCLOAK}
       KEYCLOAK_DB_USER: ${KEYCLOAK_DB_USER:-keycloak}
       KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-keycloak}
     volumes:
       - keycloak_pgdata:/var/lib/postgresql/data
-      - ./init-keycloak-db.sh:/docker-entrypoint-initdb.d/init-keycloak-db.sh
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${KEYCLOAK_DB_USER}\" -d \"$${KEYCLOAK_DB_NAME}\""]
+      start_period: 10s
       interval: 5s
       retries: 10
 
