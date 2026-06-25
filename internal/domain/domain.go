@@ -20,6 +20,7 @@ const (
 	SyncCredentialActionNone              = "none"
 	SyncFailureDomainIdentityMapping      = "identity_group_membership_mapping"
 
+	PlanActionKeycloakUserCreate        = "keycloak.user.create"
 	PlanActionKeycloakGroupCreate       = "keycloak.group.create"
 	PlanActionKeycloakGroupMemberAdd    = "keycloak.group.member.add"
 	PlanActionKeycloakGroupMemberRemove = "keycloak.group.member.remove"
@@ -135,6 +136,7 @@ type MutationResult struct {
 }
 
 type PlanSummary struct {
+	CreateKeycloakUsers       int `json:"create_keycloak_users,omitempty"`
 	CreateKeycloakGroups      int `json:"create_keycloak_groups,omitempty"`
 	UpdateKeycloakMemberships int `json:"update_keycloak_memberships,omitempty"`
 	DeleteKeycloakMirrors     int `json:"delete_keycloak_mirror_groups,omitempty"`

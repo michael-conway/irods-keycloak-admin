@@ -11,19 +11,58 @@ import (
 	planvalidator "github.com/michael-conway/irods-keycloak-admin/internal/plan"
 )
 
-func (s *Service) readRepairSnapshots(ctx context.Context, realm string, zone string) (map[string]irodsGroupSnapshot, map[string]keycloakGroupSnapshot, error) {
-	irodsGroups, err := s.readIRODSSnapshot(ctx, zone)
+func (s *Service) readRepairSnapshots(ctx context.Context, realm string, zone string) (map[string]irodsUserSnapshot, map[string]irodsGroupSnapshot, map[string]keycloakGroupSnapshot, map[string]string, error) {
+	irodsUsers, err := s.readIRODSUserSnapshot(ctx, zone)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
+	}
+	irodsGroups, err := s.readIRODSGroupSnapshot(ctx, zone)
+	if err != nil {
+		return nil, nil, nil, nil, err
 	}
 	keycloakGroups, err := s.readKeycloakSnapshot(ctx, realm, zone)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return irodsGroups, keycloakGroups, nil
+	keycloakUsers, err := s.readKeycloakUsersForIRODSUsers(ctx, realm, irodsUsers)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return irodsUsers, irodsGroups, keycloakGroups, keycloakUsers, nil
 }
 
-func (s *Service) readIRODSSnapshot(ctx context.Context, zone string) (map[string]irodsGroupSnapshot, error) {
+func (s *Service) readIRODSUserSnapshot(ctx context.Context, zone string) (map[string]irodsUserSnapshot, error) {
+	users, err := s.IRODS.ListUsers(ctx, zone, irodstypes.IRODSUserRodsUser)
+	if err != nil {
+		return nil, err
+	}
+
+	snapshot := make(map[string]irodsUserSnapshot, len(users))
+	for _, user := range users {
+		userSnapshot, ok := buildIRODSUserSnapshot(zone, user)
+		if !ok {
+			continue
+		}
+		snapshot[userSnapshot.Username] = userSnapshot
+	}
+	return snapshot, nil
+}
+
+func buildIRODSUserSnapshot(zone string, user *irodstypes.IRODSUser) (irodsUserSnapshot, bool) {
+	if user == nil {
+		return irodsUserSnapshot{}, false
+	}
+	username := strings.TrimSpace(user.Name)
+	if username == "" {
+		return irodsUserSnapshot{}, false
+	}
+	return irodsUserSnapshot{
+		Username: username,
+		Zone:     stringOrDefault(strings.TrimSpace(user.Zone), zone),
+	}, true
+}
+
+func (s *Service) readIRODSGroupSnapshot(ctx context.Context, zone string) (map[string]irodsGroupSnapshot, error) {
 	groups, err := s.IRODS.ListUsers(ctx, zone, irodstypes.IRODSUserRodsGroup)
 	if err != nil {
 		return nil, err
@@ -82,6 +121,25 @@ func (s *Service) readKeycloakSnapshot(ctx context.Context, realm string, zone s
 	return snapshot, nil
 }
 
+func (s *Service) readKeycloakUsersForIRODSUsers(ctx context.Context, realm string, irodsUsers map[string]irodsUserSnapshot) (map[string]string, error) {
+	users := map[string]string{}
+	for username := range irodsUsers {
+		username = strings.TrimSpace(username)
+		if username == "" {
+			continue
+		}
+		user, err := s.Keycloak.FindUserByUsername(ctx, realm, username)
+		if err != nil {
+			return nil, err
+		}
+		if user == nil || strings.TrimSpace(user.ID) == "" {
+			continue
+		}
+		users[username] = strings.TrimSpace(user.ID)
+	}
+	return users, nil
+}
+
 func (s *Service) buildKeycloakGroupSnapshot(ctx context.Context, realm string, zone string, group keycloakadmin.Group) (keycloakGroupSnapshot, bool, error) {
 	groupName, groupZone, ok := s.keycloakGroupMapping(realm, zone, group)
 	if !ok {
@@ -112,6 +170,9 @@ func (s *Service) buildKeycloakGroupSnapshot(ctx context.Context, realm string, 
 func (s *Service) keycloakGroupMapping(realm string, zone string, group keycloakadmin.Group) (string, string, bool) {
 	mirrorPolicy := s.mirrorPolicy()
 	path := planvalidator.NormalizeGroupPath(group.Path)
+	if mirrorPolicy.IsRootPath(path) {
+		return "", "", false
+	}
 	mirrorName := firstAttribute(group.Attributes, mirrorAttrGroupName)
 	authority := strings.ToLower(firstAttribute(group.Attributes, mirrorAttrAuthority))
 	if mirrorName == "" && authority != domain.SyncPlanAuthorityIRODS && !mirrorPolicy.IsManagedPath(path) {

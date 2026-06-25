@@ -1,6 +1,6 @@
 {
   "plan_format_version": "irods-keycloak-admin.sync-plan.v1",
-  "plan_id": "plan-20260622T163246.137721000Z",
+  "plan_id": "plan-20260625T164720.742563000Z",
   "mode": "sync",
   "target_system": "keycloak",
   "authority": "irods",
@@ -8,25 +8,23 @@
   "zone": "tempZone",
   "keycloak_mirror_root": "/irods",
   "summary": {
-    "create_keycloak_groups": 1,
-    "update_keycloak_memberships": 1,
-    "delete_keycloak_mirror_groups": 4,
-    "requires_approval": 4
+    "create_keycloak_users": 2,
+    "update_keycloak_memberships": 2
   },
   "operations": [
     {
       "operation_id": "op-001",
-      "action": "keycloak.group.create",
-      "target": "/irods/public",
+      "action": "keycloak.user.create",
+      "target": "anonymous",
       "risk": "low",
       "evidence": {
         "authority_role": "directional_repair_policy",
-        "change_cause": "missing_mirror_group",
+        "change_cause": "missing_mirror_user",
         "conflict_status": "none",
-        "irods_group_name": "public",
+        "irods_username": "anonymous",
         "irods_zone": "tempZone",
-        "keycloak_path": "/irods/public",
         "keycloak_realm": "irods",
+        "keycloak_username": "anonymous",
         "mapping_identity_known": true,
         "sync_classification": "candidate_addition",
         "sync_direction": "irods_to_keycloak"
@@ -34,16 +32,35 @@
     },
     {
       "operation_id": "op-002",
-      "action": "keycloak.group.member.add",
-      "target": "/irods/public#member:test2",
+      "action": "keycloak.user.create",
+      "target": "frog",
       "risk": "low",
       "evidence": {
         "authority_role": "directional_repair_policy",
-        "change_cause": "missing_mirror_group",
+        "change_cause": "missing_mirror_user",
+        "conflict_status": "none",
+        "irods_username": "frog",
+        "irods_zone": "tempZone",
+        "keycloak_realm": "irods",
+        "keycloak_username": "frog",
+        "mapping_identity_known": true,
+        "sync_classification": "candidate_addition",
+        "sync_direction": "irods_to_keycloak"
+      }
+    },
+    {
+      "operation_id": "op-003",
+      "action": "keycloak.group.member.add",
+      "target": "/irods/public#member:anonymous",
+      "risk": "low",
+      "evidence": {
+        "authority_role": "directional_repair_policy",
+        "change_cause": "membership_drift",
         "conflict_status": "none",
         "irods_group_name": "public",
-        "irods_username": "test2",
+        "irods_username": "anonymous",
         "irods_zone": "tempZone",
+        "keycloak_group_id": "dd05e4b9-eece-45cb-9279-c14589f4e585",
         "keycloak_path": "/irods/public",
         "keycloak_realm": "irods",
         "mapping_identity_known": true,
@@ -52,78 +69,22 @@
       }
     },
     {
-      "operation_id": "op-003",
-      "action": "keycloak.group.delete",
-      "target": "/irods",
-      "risk": "requires_approval",
-      "evidence": {
-        "authority_role": "directional_repair_policy",
-        "change_cause": "stale_keycloak_state",
-        "conflict_status": "none",
-        "irods_group_name": "irods",
-        "irods_zone": "tempZone",
-        "keycloak_group_id": "9e0c6c8d-829f-450f-89b1-ff26c1d4eb7b",
-        "keycloak_path": "/irods",
-        "keycloak_realm": "irods",
-        "mapping_identity_known": true,
-        "sync_classification": "candidate_removal",
-        "sync_direction": "irods_to_keycloak"
-      }
-    },
-    {
       "operation_id": "op-004",
-      "action": "keycloak.group.delete",
-      "target": "/irods/irods-admins",
-      "risk": "requires_approval",
+      "action": "keycloak.group.member.add",
+      "target": "/irods/public#member:frog",
+      "risk": "low",
       "evidence": {
         "authority_role": "directional_repair_policy",
-        "change_cause": "stale_keycloak_state",
+        "change_cause": "membership_drift",
         "conflict_status": "none",
-        "irods_group_name": "irods-admins",
+        "irods_group_name": "public",
+        "irods_username": "frog",
         "irods_zone": "tempZone",
-        "keycloak_group_id": "d394e5f0-1af3-4b73-8454-40a44e3ef3a4",
-        "keycloak_path": "/irods/irods-admins",
+        "keycloak_group_id": "dd05e4b9-eece-45cb-9279-c14589f4e585",
+        "keycloak_path": "/irods/public",
         "keycloak_realm": "irods",
         "mapping_identity_known": true,
-        "sync_classification": "candidate_removal",
-        "sync_direction": "irods_to_keycloak"
-      }
-    },
-    {
-      "operation_id": "op-005",
-      "action": "keycloak.group.delete",
-      "target": "/irods/project-alpha",
-      "risk": "requires_approval",
-      "evidence": {
-        "authority_role": "directional_repair_policy",
-        "change_cause": "stale_keycloak_state",
-        "conflict_status": "none",
-        "irods_group_name": "project-alpha",
-        "irods_zone": "tempZone",
-        "keycloak_group_id": "81952b13-8aa5-4dd2-94f1-e1b0be0c06f4",
-        "keycloak_path": "/irods/project-alpha",
-        "keycloak_realm": "irods",
-        "mapping_identity_known": true,
-        "sync_classification": "candidate_removal",
-        "sync_direction": "irods_to_keycloak"
-      }
-    },
-    {
-      "operation_id": "op-006",
-      "action": "keycloak.group.delete",
-      "target": "/irods/project-beta",
-      "risk": "requires_approval",
-      "evidence": {
-        "authority_role": "directional_repair_policy",
-        "change_cause": "stale_keycloak_state",
-        "conflict_status": "none",
-        "irods_group_name": "project-beta",
-        "irods_zone": "tempZone",
-        "keycloak_group_id": "475dc366-96fc-446b-bae2-0ad36ab3cde7",
-        "keycloak_path": "/irods/project-beta",
-        "keycloak_realm": "irods",
-        "mapping_identity_known": true,
-        "sync_classification": "candidate_removal",
+        "sync_classification": "candidate_addition",
         "sync_direction": "irods_to_keycloak"
       }
     }

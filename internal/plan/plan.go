@@ -86,6 +86,17 @@ func ValidateOperationForApply(syncPlan domain.SyncPlan, operation domain.PlanOp
 		return fmt.Errorf("operation %q irods_zone evidence does not match plan zone", operation.OperationID)
 	}
 	switch operation.Action {
+	case domain.PlanActionKeycloakUserCreate:
+		if targetSystem != domain.SyncTargetKeycloak {
+			return fmt.Errorf("operation %q has unsupported action %q for target %q", operation.OperationID, operation.Action, targetSystem)
+		}
+		username, err := IRODSUserTarget(operation)
+		if err != nil {
+			return fmt.Errorf("operation %q: %w", operation.OperationID, err)
+		}
+		if evidenceUsername := firstNonEmpty(EvidenceString(operation, "irods_username"), EvidenceString(operation, "keycloak_username")); evidenceUsername != "" && evidenceUsername != username {
+			return fmt.Errorf("operation %q username evidence does not match target", operation.OperationID)
+		}
 	case domain.PlanActionKeycloakGroupCreate:
 		if targetSystem != domain.SyncTargetKeycloak {
 			return fmt.Errorf("operation %q has unsupported action %q for target %q", operation.OperationID, operation.Action, targetSystem)
@@ -312,6 +323,8 @@ func SummaryCounts(syncPlan domain.SyncPlan) domain.PlanSummary {
 	summary := domain.PlanSummary{}
 	for _, operation := range syncPlan.Operations {
 		switch operation.Action {
+		case domain.PlanActionKeycloakUserCreate:
+			summary.CreateKeycloakUsers++
 		case domain.PlanActionKeycloakGroupCreate:
 			summary.CreateKeycloakGroups++
 		case domain.PlanActionKeycloakGroupMemberAdd, domain.PlanActionKeycloakGroupMemberRemove:

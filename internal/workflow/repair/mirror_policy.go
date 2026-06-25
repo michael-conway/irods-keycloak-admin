@@ -52,6 +52,10 @@ func (p mirrorPathPolicy) IsManagedPath(groupPath string) bool {
 	return groupPath == p.root || strings.HasPrefix(groupPath, p.root+"/")
 }
 
+func (p mirrorPathPolicy) IsRootPath(groupPath string) bool {
+	return normalizeAbsoluteMirrorPath(groupPath) == p.root
+}
+
 func normalizeAbsoluteMirrorPath(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {

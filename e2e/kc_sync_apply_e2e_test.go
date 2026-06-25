@@ -186,6 +186,43 @@ func TestKCSyncApplyCreatesIRODSUserFromKeycloakE2E(t *testing.T) {
 	}
 }
 
+func TestKCSyncApplyCreatesKeycloakUserFromIRODSE2E(t *testing.T) {
+	cfg := RequireConfig(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	username := uniqueE2EName("kckcuser")
+	keycloak := newE2EKeycloakClient(t, cfg)
+
+	cleanupIRODSUser(t, ctx, cfg, username)
+	cleanupKeycloakUser(t, ctx, keycloak, cfg, username)
+	t.Cleanup(func() {
+		cleanupIRODSUser(t, context.Background(), cfg, username)
+		cleanupKeycloakUser(t, context.Background(), keycloak, cfg, username)
+	})
+
+	ensureIRODSUserExists(t, ctx, cfg, username)
+
+	plan := filterPlanForUser(t, runKCSyncDryRun(t, ctx, cfg), username)
+	requireOperation(t, plan, domain.PlanActionKeycloakUserCreate, username)
+	if plan.Summary.CreateKeycloakUsers != 1 {
+		t.Fatalf("unexpected Keycloak user plan summary: %+v", plan.Summary)
+	}
+
+	result := runKCSyncApply(t, ctx, cfg, plan, "none", "", true)
+	requireApplyConvergedResult(t, result, len(plan.Operations))
+
+	user := keycloak.requireUserByUsername(t, ctx, cfg, username)
+	if user.Username != username {
+		t.Fatalf("unexpected Keycloak user after apply: %+v", user)
+	}
+
+	after := filterPlanForUser(t, runKCSyncDryRun(t, ctx, cfg), username)
+	if len(after.Operations) != 0 {
+		t.Fatalf("expected Keycloak user to converge after apply, got operations: %+v", after.Operations)
+	}
+}
+
 func requireApplyResult(t *testing.T, result domain.ApplyResult, status string, applied int, skipped int, failed int) {
 	t.Helper()
 
@@ -287,6 +324,20 @@ func filterPlanForGroup(t *testing.T, plan domain.SyncPlan, cfg Config, groupNam
 	filtered.Operations = []domain.PlanOperation{}
 	for _, operation := range plan.Operations {
 		if operation.Target == groupPath || strings.HasPrefix(operation.Target, groupPath+"#member:") {
+			filtered.Operations = append(filtered.Operations, operation)
+		}
+	}
+	filtered.Summary = planutil.SummaryCounts(filtered)
+	return filtered
+}
+
+func filterPlanForUser(t *testing.T, plan domain.SyncPlan, username string) domain.SyncPlan {
+	t.Helper()
+
+	filtered := plan
+	filtered.Operations = []domain.PlanOperation{}
+	for _, operation := range plan.Operations {
+		if operation.Target == username {
 			filtered.Operations = append(filtered.Operations, operation)
 		}
 	}

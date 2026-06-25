@@ -119,6 +119,54 @@ func TestKCSyncDryRunPlansStaleKeycloakMirrorE2E(t *testing.T) {
 	}
 }
 
+func TestKCSyncDryRunDoesNotDeleteMirrorRootContainerE2E(t *testing.T) {
+	cfg := RequireConfig(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	keycloak := newE2EKeycloakClient(t, cfg)
+	root, err := keycloak.findGroupByPath(ctx, cfg.Keycloak.Realm, cfg.Fixtures.MirrorRoot)
+	if err != nil {
+		t.Fatalf("find Keycloak mirror root %q: %v", cfg.Fixtures.MirrorRoot, err)
+	}
+	if root == nil {
+		t.Fatalf("Keycloak mirror root %q not found", cfg.Fixtures.MirrorRoot)
+	}
+
+	plan := runKCSyncDryRun(t, ctx, cfg)
+	forbidOperation(t, plan, domain.PlanActionKeycloakGroupDelete, cfg.Fixtures.MirrorRoot)
+}
+
+func TestKCSyncDryRunPlansMissingKeycloakUserE2E(t *testing.T) {
+	cfg := RequireConfig(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	username := uniqueE2EName("kcdryuser")
+	keycloak := newE2EKeycloakClient(t, cfg)
+
+	cleanupIRODSUser(t, ctx, cfg, username)
+	cleanupKeycloakUser(t, ctx, keycloak, cfg, username)
+	t.Cleanup(func() {
+		cleanupIRODSUser(t, context.Background(), cfg, username)
+		cleanupKeycloakUser(t, context.Background(), keycloak, cfg, username)
+	})
+
+	ensureIRODSUserExists(t, ctx, cfg, username)
+
+	plan := runKCSyncDryRun(t, ctx, cfg)
+	operation := requireOperation(t, plan, domain.PlanActionKeycloakUserCreate, username)
+	assertEvidence(t, operation, "change_cause", "missing_mirror_user")
+	assertEvidence(t, operation, "irods_username", username)
+	assertEvidence(t, operation, "keycloak_username", username)
+
+	if user, err := keycloak.findUserByUsername(ctx, cfg, username); err != nil {
+		t.Fatalf("checking Keycloak user after dry-run: %v", err)
+	} else if user != nil {
+		t.Fatalf("dry-run created Keycloak user unexpectedly: %+v", user)
+	}
+}
+
 func runKCSyncDryRun(t *testing.T, ctx context.Context, cfg Config) domain.SyncPlan {
 	t.Helper()
 
@@ -256,6 +304,14 @@ func forbidOperation(t *testing.T, plan domain.SyncPlan, action string, target s
 		if operation.Action == action && operation.Target == target {
 			t.Fatalf("unexpected operation action=%q target=%q in plan: %+v", action, target, plan.Operations)
 		}
+	}
+}
+
+func assertEvidence(t *testing.T, operation domain.PlanOperation, key string, want any) {
+	t.Helper()
+
+	if operation.Evidence[key] != want {
+		t.Fatalf("unexpected evidence %q for operation %+v: want %v got %v", key, operation, want, operation.Evidence[key])
 	}
 }
 

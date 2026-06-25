@@ -79,6 +79,16 @@ func (s *Service) applyReviewedOperation(ctx context.Context, syncPlan domain.Sy
 
 func (s *Service) applyOperation(ctx context.Context, syncPlan domain.SyncPlan, operation domain.PlanOperation) (keycloakadmin.MutationOutcome, error) {
 	switch operation.Action {
+	case domain.PlanActionKeycloakUserCreate:
+		user, err := keycloakUserForCreate(syncPlan, operation)
+		if err != nil {
+			return "", err
+		}
+		_, err = s.Keycloak.CreateOrUpdateUser(ctx, syncPlan.Realm, user)
+		if err != nil {
+			return "", err
+		}
+		return keycloakadmin.MutationOutcomeCreated, nil
 	case domain.PlanActionKeycloakGroupCreate:
 		group, err := keycloakGroupForCreate(syncPlan, operation)
 		if err != nil {
@@ -107,6 +117,25 @@ func (s *Service) applyOperation(ctx context.Context, syncPlan domain.SyncPlan, 
 	default:
 		return "", fmt.Errorf("unsupported operation action %q", operation.Action)
 	}
+}
+
+func keycloakUserForCreate(syncPlan domain.SyncPlan, operation domain.PlanOperation) (keycloakadmin.User, error) {
+	username, err := planvalidator.IRODSUserTarget(operation)
+	if err != nil {
+		return keycloakadmin.User{}, err
+	}
+	zone := planvalidator.EvidenceString(operation, "irods_zone")
+	if zone == "" {
+		zone = syncPlan.Zone
+	}
+	return keycloakadmin.User{
+		Username: username,
+		Attributes: map[string][]string{
+			"irods_username":    {username},
+			mirrorAttrZone:      {zone},
+			mirrorAttrAuthority: {domain.SyncPlanAuthorityIRODS},
+		},
+	}, nil
 }
 
 func keycloakGroupForCreate(syncPlan domain.SyncPlan, operation domain.PlanOperation) (group keycloakadmin.Group, err error) {
@@ -139,7 +168,8 @@ func keycloakMemberAddRefs(operation domain.PlanOperation) (string, string, erro
 		return "", "", err
 	}
 	groupRef := firstNonEmpty(groupPath, planvalidator.EvidenceString(operation, "keycloak_group_id"))
-	return groupRef, username, nil
+	userRef := firstNonEmpty(planvalidator.EvidenceString(operation, "keycloak_user_id"), username)
+	return groupRef, userRef, nil
 }
 
 func keycloakMemberRemoveRefs(operation domain.PlanOperation) (string, string, error) {
@@ -225,6 +255,12 @@ func newMutationResult(syncPlan domain.SyncPlan, operation domain.PlanOperation)
 }
 
 func mutationTargetParts(operation domain.PlanOperation) (string, string) {
+	if operation.Action == domain.PlanActionKeycloakUserCreate {
+		username, err := planvalidator.IRODSUserTarget(operation)
+		if err == nil {
+			return "", username
+		}
+	}
 	if strings.Contains(operation.Target, "#member:") {
 		groupPath, username, err := planvalidator.MemberTarget(operation)
 		if err == nil {

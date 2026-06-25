@@ -285,26 +285,6 @@ Current implemented target selectors:
   slice because selected-group planning already includes group metadata and
   conservative membership drift.
 
-#### First-Wave Exit Point
-
-The intended exit point for this wave is interactive real-world testing of a
-Keycloak-to-iRODS administrative workflow.
-
-The workflow to test manually is:
-
-1. Create or choose a Keycloak user or group through the normal administrator
-   surface.
-2. Generate an iRODS-targeted plan with one of:
-   `irods-kc-sync sync --dry-run --target=irods --keycloak-user-id ...`
-   `irods-kc-sync sync --dry-run --target=irods --keycloak-group-id ...`
-   `irods-kc-sync sync --dry-run --target=irods --keycloak-group-path ...`
-3. Review the plan for user, group, metadata, and conservative membership
-   operations.
-4. Apply the accepted plan with:
-   `irods-kc-sync apply --plan plan.json`
-5. Re-run the same dry-run selector and confirm the plan converges or only
-   reports intentionally deferred ambiguity.
-
 Exit criteria before selecting the next sprint:
 
 - A real administrator can provision at least one Keycloak-originating user into

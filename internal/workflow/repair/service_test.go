@@ -16,6 +16,9 @@ import (
 
 func TestRepairKeycloakPlansMissingMirrorGroupAndMembership(t *testing.T) {
 	irods := &fakeIRODSClient{
+		users: []*irodstypes.IRODSUser{
+			{ID: 200, Name: "alice", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
+		},
 		groups: []*irodstypes.IRODSUser{{
 			ID:   100,
 			Name: "project-alpha",
@@ -28,7 +31,11 @@ func TestRepairKeycloakPlansMissingMirrorGroupAndMembership(t *testing.T) {
 			},
 		},
 	}
-	keycloak := &fakeKeycloakClient{}
+	keycloak := &fakeKeycloakClient{
+		users: map[string]keycloakadmin.User{
+			"alice": {ID: "kc-alice", Username: "alice"},
+		},
+	}
 	service := Service{
 		IRODS:        irods,
 		Keycloak:     keycloak,
@@ -73,6 +80,9 @@ func TestRepairKeycloakPlansMissingMirrorGroupAndMembership(t *testing.T) {
 
 func TestRepairKeycloakUsesConfiguredMirrorRoot(t *testing.T) {
 	irods := &fakeIRODSClient{
+		users: []*irodstypes.IRODSUser{
+			{ID: 200, Name: "alice", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
+		},
 		groups: []*irodstypes.IRODSUser{{
 			ID:   100,
 			Name: "project-alpha",
@@ -85,7 +95,11 @@ func TestRepairKeycloakUsesConfiguredMirrorRoot(t *testing.T) {
 			},
 		},
 	}
-	keycloak := &fakeKeycloakClient{}
+	keycloak := &fakeKeycloakClient{
+		users: map[string]keycloakadmin.User{
+			"alice": {ID: "kc-alice", Username: "alice"},
+		},
+	}
 	service := Service{
 		IRODS:        irods,
 		Keycloak:     keycloak,
@@ -110,6 +124,9 @@ func TestRepairKeycloakUsesConfiguredMirrorRoot(t *testing.T) {
 
 func TestRepairKeycloakPlansMembershipDriftAndStaleMirror(t *testing.T) {
 	irods := &fakeIRODSClient{
+		users: []*irodstypes.IRODSUser{
+			{ID: 200, Name: "alice", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
+		},
 		groups: []*irodstypes.IRODSUser{{
 			ID:   100,
 			Name: "project-alpha",
@@ -123,6 +140,9 @@ func TestRepairKeycloakPlansMembershipDriftAndStaleMirror(t *testing.T) {
 		},
 	}
 	keycloak := &fakeKeycloakClient{
+		users: map[string]keycloakadmin.User{
+			"alice": {ID: "kc-alice", Username: "alice"},
+		},
 		groups: []keycloakadmin.Group{
 			{
 				ID:   "kc-project-alpha",
@@ -194,6 +214,7 @@ func TestRepairKeycloakPlansMembershipDriftAndStaleMirror(t *testing.T) {
 	assertEvidenceValue(t, plan.Operations[1], "change_cause", "membership_drift")
 	assertEvidenceValue(t, plan.Operations[2], "change_cause", "stale_keycloak_state")
 	assertEvidenceValue(t, plan.Operations[0], "keycloak_group_id", "kc-project-alpha")
+	assertEvidenceValue(t, plan.Operations[0], "keycloak_user_id", "kc-alice")
 	assertEvidenceValue(t, plan.Operations[1], "keycloak_group_id", "kc-project-alpha")
 	assertEvidenceValue(t, plan.Operations[2], "keycloak_group_id", "kc-stale")
 	assertEvidenceValue(t, plan.Operations[0], "sync_classification", domain.SyncClassificationCandidateAddition)
@@ -205,8 +226,114 @@ func TestRepairKeycloakPlansMembershipDriftAndStaleMirror(t *testing.T) {
 	}
 }
 
+func TestRepairKeycloakIgnoresMirrorRootContainer(t *testing.T) {
+	irods := &fakeIRODSClient{
+		users: []*irodstypes.IRODSUser{
+			{ID: 200, Name: "anonymous", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
+		},
+		groups: []*irodstypes.IRODSUser{{
+			ID:   100,
+			Name: "public",
+			Zone: "tempZone",
+			Type: irodstypes.IRODSUserRodsGroup,
+		}},
+		members: map[string][]*irodstypes.IRODSUser{
+			"public": {
+				{ID: 200, Name: "anonymous", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
+			},
+		},
+	}
+	keycloak := &fakeKeycloakClient{
+		users: map[string]keycloakadmin.User{
+			"anonymous": {ID: "kc-anonymous", Username: "anonymous"},
+		},
+		groups: []keycloakadmin.Group{
+			{
+				ID:   "kc-root",
+				Name: "irods",
+				Path: "/irods",
+			},
+			{
+				ID:   "kc-public",
+				Name: "public",
+				Path: "/irods/public",
+				Attributes: map[string][]string{
+					"irods_group_name": {"public"},
+					"irods_zone":       {"tempZone"},
+					"authority":        {"irods"},
+				},
+			},
+		},
+		members: map[string][]keycloakadmin.User{
+			"kc-public": {},
+		},
+	}
+	service := Service{
+		IRODS:        irods,
+		Keycloak:     keycloak,
+		Mapper:       mapper.Mapper{DefaultZone: "tempZone"},
+		DefaultRealm: "example",
+	}
+
+	plan, err := service.RepairKeycloak(context.Background(), domain.RepairRequest{})
+	if err != nil {
+		t.Fatalf("RepairKeycloak returned error: %v", err)
+	}
+
+	if plan.Summary.DeleteKeycloakMirrors != 0 || plan.Summary.RequiresApproval != 0 {
+		t.Fatalf("mirror root container should not be planned for deletion, got %+v", plan.Summary)
+	}
+	assertActions(t, plan, []string{
+		domain.PlanActionKeycloakGroupMemberAdd,
+	})
+	assertTargets(t, plan, []string{
+		"/irods/public#member:anonymous",
+	})
+	if keycloak.listMembersCalls["kc-root"] != 0 {
+		t.Fatal("mirror root container should not be read as an iRODS group")
+	}
+}
+
+func TestRepairKeycloakPlansMissingMirrorUser(t *testing.T) {
+	irods := &fakeIRODSClient{
+		users: []*irodstypes.IRODSUser{
+			{ID: 200, Name: "frog", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
+		},
+	}
+	service := Service{
+		IRODS:        irods,
+		Keycloak:     &fakeKeycloakClient{},
+		Mapper:       mapper.Mapper{DefaultZone: "tempZone"},
+		DefaultRealm: "example",
+	}
+
+	plan, err := service.RepairKeycloak(context.Background(), domain.RepairRequest{})
+	if err != nil {
+		t.Fatalf("RepairKeycloak returned error: %v", err)
+	}
+
+	if plan.Summary.CreateKeycloakUsers != 1 {
+		t.Fatalf("expected one user create, got %+v", plan.Summary)
+	}
+	assertActions(t, plan, []string{
+		domain.PlanActionKeycloakUserCreate,
+	})
+	assertTargets(t, plan, []string{
+		"frog",
+	})
+	assertEvidenceValue(t, plan.Operations[0], "change_cause", "missing_mirror_user")
+	assertEvidenceValue(t, plan.Operations[0], "irods_username", "frog")
+	assertEvidenceValue(t, plan.Operations[0], "keycloak_username", "frog")
+}
+
 func TestRepairKeycloakOrdersOperationsDeterministically(t *testing.T) {
 	irods := &fakeIRODSClient{
+		users: []*irodstypes.IRODSUser{
+			{ID: 200, Name: "zoe", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
+			{ID: 201, Name: "amy", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
+			{ID: 202, Name: "bob", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
+			{ID: 203, Name: "alice", Zone: "tempZone", Type: irodstypes.IRODSUserRodsUser},
+		},
 		groups: []*irodstypes.IRODSUser{
 			{ID: 100, Name: "z-team", Zone: "tempZone", Type: irodstypes.IRODSUserRodsGroup},
 			{ID: 101, Name: "a-team", Zone: "tempZone", Type: irodstypes.IRODSUserRodsGroup},
@@ -222,9 +349,17 @@ func TestRepairKeycloakOrdersOperationsDeterministically(t *testing.T) {
 			},
 		},
 	}
+	keycloak := &fakeKeycloakClient{
+		users: map[string]keycloakadmin.User{
+			"alice": {ID: "kc-alice", Username: "alice"},
+			"amy":   {ID: "kc-amy", Username: "amy"},
+			"bob":   {ID: "kc-bob", Username: "bob"},
+			"zoe":   {ID: "kc-zoe", Username: "zoe"},
+		},
+	}
 	service := Service{
 		IRODS:        irods,
-		Keycloak:     &fakeKeycloakClient{},
+		Keycloak:     keycloak,
 		Mapper:       mapper.Mapper{DefaultZone: "tempZone"},
 		DefaultRealm: "example",
 	}
@@ -329,6 +464,47 @@ func TestApplyKeycloakRepairPlanMutatesOnlyKeycloak(t *testing.T) {
 	}
 	if keycloak.deleteGroupCalls != 0 {
 		t.Fatalf("apply should not delete without delete operations, got %d", keycloak.deleteGroupCalls)
+	}
+}
+
+func TestApplyCreatesKeycloakUser(t *testing.T) {
+	keycloak := &fakeKeycloakClient{}
+	service := Service{Keycloak: keycloak}
+	plan := testApplyPlan([]domain.PlanOperation{{
+		OperationID: "op-001",
+		Action:      domain.PlanActionKeycloakUserCreate,
+		Target:      "frog",
+		Risk:        "low",
+		Evidence: map[string]any{
+			"irods_username":    "frog",
+			"irods_zone":        "tempZone",
+			"keycloak_realm":    "example",
+			"keycloak_username": "frog",
+		},
+	}})
+
+	result, err := service.Apply(context.Background(), domain.ApplyRequest{
+		RequestMetadata: domain.RequestMetadata{Realm: "example", Zone: "tempZone"},
+		Plan:            &plan,
+	})
+	if err != nil {
+		t.Fatalf("Apply returned error: %v", err)
+	}
+	if result.Status != "applied" || result.Applied != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected apply result: %+v", result)
+	}
+	if len(keycloak.createdUsers) != 1 {
+		t.Fatalf("expected one created user, got %+v", keycloak.createdUsers)
+	}
+	created := keycloak.createdUsers[0]
+	if created.Username != "frog" {
+		t.Fatalf("unexpected created user: %+v", created)
+	}
+	if created.Attributes["irods_username"][0] != "frog" || created.Attributes["irods_zone"][0] != "tempZone" {
+		t.Fatalf("unexpected created user attributes: %+v", created.Attributes)
+	}
+	if result.Operations[0].KeycloakMirror.User != "frog" {
+		t.Fatalf("unexpected mutation result: %+v", result.Operations[0])
 	}
 }
 
@@ -811,6 +987,7 @@ func assertTargets(t *testing.T, plan domain.SyncPlan, want []string) {
 }
 
 type fakeIRODSClient struct {
+	users   []*irodstypes.IRODSUser
 	groups  []*irodstypes.IRODSUser
 	members map[string][]*irodstypes.IRODSUser
 }
@@ -828,10 +1005,13 @@ func (f *fakeIRODSClient) RemoveUser(context.Context, string, string, irodstypes
 }
 
 func (f *fakeIRODSClient) ListUsers(_ context.Context, _ string, userType irodstypes.IRODSUserType) ([]*irodstypes.IRODSUser, error) {
-	if userType != irodstypes.IRODSUserRodsGroup {
-		return nil, nil
+	if userType == irodstypes.IRODSUserRodsUser {
+		return append([]*irodstypes.IRODSUser(nil), f.users...), nil
 	}
-	return append([]*irodstypes.IRODSUser(nil), f.groups...), nil
+	if userType == irodstypes.IRODSUserRodsGroup {
+		return append([]*irodstypes.IRODSUser(nil), f.groups...), nil
+	}
+	return nil, nil
 }
 
 func (f *fakeIRODSClient) ListGroupMembers(_ context.Context, _ string, groupName string) ([]*irodstypes.IRODSUser, error) {
@@ -855,9 +1035,13 @@ func (f *fakeIRODSClient) ListUserMetadata(context.Context, string, string) ([]*
 }
 
 type fakeKeycloakClient struct {
+	users                map[string]keycloakadmin.User
 	groups               []keycloakadmin.Group
 	members              map[string][]keycloakadmin.User
 	listMembersCalls     map[string]int
+	createUserCalls      int
+	createdUsers         []keycloakadmin.User
+	createUserErr        error
 	createCalls          int
 	createdGroups        []keycloakadmin.Group
 	createGroupOutcome   keycloakadmin.MutationOutcome
@@ -895,8 +1079,16 @@ func (f *fakeKeycloakClient) GetUser(context.Context, string, string) (*keycloak
 	return nil, nil
 }
 
-func (f *fakeKeycloakClient) FindUserByUsername(context.Context, string, string) (*keycloakadmin.User, error) {
-	return nil, nil
+func (f *fakeKeycloakClient) FindUserByUsername(_ context.Context, _ string, username string) (*keycloakadmin.User, error) {
+	user, ok := f.users[strings.TrimSpace(username)]
+	if !ok {
+		return nil, nil
+	}
+	userCopy := user
+	if userCopy.Username == "" {
+		userCopy.Username = strings.TrimSpace(username)
+	}
+	return &userCopy, nil
 }
 
 func (f *fakeKeycloakClient) ListGroups(context.Context, string) ([]keycloakadmin.Group, error) {
@@ -911,8 +1103,13 @@ func (f *fakeKeycloakClient) ListGroupMembers(_ context.Context, _ string, group
 	return append([]keycloakadmin.User(nil), f.members[groupID]...), nil
 }
 
-func (f *fakeKeycloakClient) CreateOrUpdateUser(context.Context, string, keycloakadmin.User) (*keycloakadmin.User, error) {
-	return nil, nil
+func (f *fakeKeycloakClient) CreateOrUpdateUser(_ context.Context, _ string, user keycloakadmin.User) (*keycloakadmin.User, error) {
+	f.createUserCalls++
+	f.createdUsers = append(f.createdUsers, user)
+	if f.createUserErr != nil {
+		return nil, f.createUserErr
+	}
+	return &user, nil
 }
 
 func (f *fakeKeycloakClient) CreateOrUpdateGroup(_ context.Context, _ string, group keycloakadmin.Group) (*keycloakadmin.Group, keycloakadmin.MutationOutcome, error) {

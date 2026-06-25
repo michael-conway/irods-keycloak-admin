@@ -40,6 +40,11 @@ type irodsGroupSnapshot struct {
 	Members map[string]struct{}
 }
 
+type irodsUserSnapshot struct {
+	Username string
+	Zone     string
+}
+
 type keycloakGroupSnapshot struct {
 	ID      string
 	Name    string
@@ -57,12 +62,12 @@ func (s *Service) RepairKeycloak(ctx context.Context, req domain.RepairRequest) 
 	if err != nil {
 		return domain.SyncPlan{}, err
 	}
-	irodsGroups, keycloakGroups, err := s.readRepairSnapshots(ctx, realm, zone)
+	irodsUsers, irodsGroups, keycloakGroups, keycloakUsers, err := s.readRepairSnapshots(ctx, realm, zone)
 	if err != nil {
 		return domain.SyncPlan{}, err
 	}
 
-	return newRepairPlanner(realm, zone, s.mirrorPolicy(), irodsGroups, keycloakGroups).build(), nil
+	return newRepairPlanner(realm, zone, s.mirrorPolicy(), irodsUsers, irodsGroups, keycloakGroups, keycloakUsers).build(), nil
 }
 
 func (s *Service) Apply(ctx context.Context, req domain.ApplyRequest) (domain.ApplyResult, error) {

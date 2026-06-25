@@ -10,6 +10,7 @@ import (
 )
 
 const (
+	changeCauseMissingMirrorUser  = "missing_mirror_user"
 	changeCauseMissingMirrorGroup = "missing_mirror_group"
 	changeCauseMembershipDrift    = "membership_drift"
 	changeCauseStaleKeycloakState = "stale_keycloak_state"
@@ -19,19 +20,23 @@ type repairPlanner struct {
 	realm          string
 	zone           string
 	mirrorPolicy   mirrorPathPolicy
+	irodsUsers     map[string]irodsUserSnapshot
 	irodsGroups    map[string]irodsGroupSnapshot
 	keycloakGroups map[string]keycloakGroupSnapshot
+	keycloakUsers  map[string]string
 	plan           domain.SyncPlan
 	operationIndex int
 }
 
-func newRepairPlanner(realm string, zone string, mirrorPolicy mirrorPathPolicy, irodsGroups map[string]irodsGroupSnapshot, keycloakGroups map[string]keycloakGroupSnapshot) *repairPlanner {
+func newRepairPlanner(realm string, zone string, mirrorPolicy mirrorPathPolicy, irodsUsers map[string]irodsUserSnapshot, irodsGroups map[string]irodsGroupSnapshot, keycloakGroups map[string]keycloakGroupSnapshot, keycloakUsers map[string]string) *repairPlanner {
 	return &repairPlanner{
 		realm:          realm,
 		zone:           zone,
 		mirrorPolicy:   mirrorPolicy,
+		irodsUsers:     irodsUsers,
 		irodsGroups:    irodsGroups,
 		keycloakGroups: keycloakGroups,
+		keycloakUsers:  keycloakUsers,
 		plan: domain.SyncPlan{
 			PlanFormatVersion:  domain.SyncPlanFormatVersion,
 			PlanID:             newPlanID(),
@@ -49,6 +54,13 @@ func newRepairPlanner(realm string, zone string, mirrorPolicy mirrorPathPolicy, 
 }
 
 func (p *repairPlanner) build() domain.SyncPlan {
+	for _, username := range sortedKeys(p.irodsUsers) {
+		if _, exists := p.keycloakUsers[username]; exists {
+			continue
+		}
+		p.appendUserCreate(p.irodsUsers[username])
+	}
+
 	for _, groupName := range sortedKeys(p.irodsGroups) {
 		p.appendIRODSGroupOperations(groupName, p.irodsGroups[groupName], p.keycloakGroups[groupName])
 	}
@@ -61,6 +73,19 @@ func (p *repairPlanner) build() domain.SyncPlan {
 	}
 
 	return p.plan
+}
+
+func (p *repairPlanner) appendUserCreate(irodsUser irodsUserSnapshot) {
+	evidence := map[string]any{
+		"change_cause":      changeCauseMissingMirrorUser,
+		"irods_username":    irodsUser.Username,
+		"irods_zone":        irodsUser.Zone,
+		"keycloak_realm":    p.realm,
+		"keycloak_username": irodsUser.Username,
+	}
+	addSyncModelEvidence(evidence, domain.SyncDirectionIRODSToKeycloak, domain.SyncClassificationCandidateAddition, true)
+	p.plan.Operations = append(p.plan.Operations, newOperation(p.nextOperationID(), domain.PlanActionKeycloakUserCreate, irodsUser.Username, "low", evidence))
+	p.plan.Summary.CreateKeycloakUsers++
 }
 
 func (p *repairPlanner) appendIRODSGroupOperations(groupName string, irodsGroup irodsGroupSnapshot, keycloakGroup keycloakGroupSnapshot) {
@@ -110,6 +135,10 @@ func (p *repairPlanner) appendGroupCreate(groupName string, zone string, groupPa
 }
 
 func (p *repairPlanner) appendMemberAdd(groupName string, irodsGroup irodsGroupSnapshot, groupPath string, keycloakGroup keycloakGroupSnapshot, username string, keycloakExists bool) {
+	userID := strings.TrimSpace(p.keycloakUsers[username])
+	if userID == "" && !mapContains(p.irodsUsers, username) {
+		return
+	}
 	changeCause := changeCauseMembershipDrift
 	if !keycloakExists {
 		changeCause = changeCauseMissingMirrorGroup
@@ -123,6 +152,7 @@ func (p *repairPlanner) appendMemberAdd(groupName string, irodsGroup irodsGroupS
 		"keycloak_path":    groupPath,
 	}
 	addNonEmptyEvidence(evidence, "keycloak_group_id", keycloakGroup.ID)
+	addNonEmptyEvidence(evidence, "keycloak_user_id", userID)
 	addSyncModelEvidence(evidence, domain.SyncDirectionIRODSToKeycloak, domain.SyncClassificationCandidateAddition, true)
 	p.plan.Operations = append(p.plan.Operations, newOperation(p.nextOperationID(), domain.PlanActionKeycloakGroupMemberAdd, memberTarget(groupPath, username), "low", evidence))
 	p.plan.Summary.UpdateKeycloakMemberships++
