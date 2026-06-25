@@ -32,59 +32,23 @@ Authority split:
 - Developer tasks should derive from administrator-guide user stories rather
   than inventing an unrelated planning vocabulary.
 
-### Sprint Plan: Scenario 2 and 3 iRODS Mutation in Sync Operations
+### Active Sprint Plan: Documentation, Planning, and REST API Equivalence
 
-Date: 2026-06-12
+Date: 2026-06-25
 
-Goal:
-
-```text
-Use the administrator guide's scenario-2 and scenario-3 user stories to start
-the next execution slice: iRODS mutation in synchronization operations.
-
-This sprint should cover iRODS mutations for users, groups, and group
-membership in the synchronization toolchain.
-
-Scenario 2 is ready for user provisioning without an iRODS native-password
-lifecycle.
-Scenario 3 should support the same user/group/group-membership mutation model
-while treating password recovery as a separate credential path, with optional
-JSON password-action reporting.
-```
-
-Resume point:
+Current goal:
 
 ```text
-The repair/apply vertical slice remains stable and available as prior work.
-
-The next active execution slice is Keycloak-driven synchronization that can
-mutate iRODS users, groups, and group memberships.
-
-IRODS_KEYCLOAK_ADMINISTRATORS_GUIDE.md owns the user stories for scenarios 2
-and 3.
-DEVELOPER_NOTES.md should now translate those user stories into concrete tool
-shapes, sprint tasks, and implementation sequencing.
+Stabilize the administrator-facing workflow before adding another interface,
+then produce a REST API equivalent to the validated CLI plan/apply workflow.
 ```
 
-Important boundary decisions:
+Completed foundation:
 
-```text
-This sprint is execution-oriented, but remains tightly bounded by scenarios 2
-and 3.
-Add iRODS mutation support for users, groups, and group memberships.
-Do not collapse scenario-3 password handling into ordinary synchronization.
-Treat scenario-3 password setup/reset as a separate credential path.
-Optional password-action JSON reporting is in scope; notification delivery is
-out of scope.
-Keep roadmap, sprinting, and execution tactics in this developer guide.
-```
-
-#### Current Sprint Tasks
-
-- Keycloak-driven iRODS user provisioning is implemented through
+- Keycloak-driven iRODS user provisioning works through
   `sync --dry-run --target=irods --keycloak-user-id` followed by
   `apply --plan`.
-- Keycloak-driven iRODS group provisioning is implemented through
+- Keycloak-driven iRODS group provisioning works through
   `sync --dry-run --target=irods --keycloak-group-id` or
   `--keycloak-group-path` followed by `apply --plan`.
 - Selected Keycloak group membership drift can be planned and applied into
@@ -102,32 +66,47 @@ Keep roadmap, sprinting, and execution tactics in this developer guide.
   `go-irodsclient-extensions`; this project no longer depends on external
   command-line iRODS clients or environment-file fallback.
 
-#### Sprint 1: Administrator Examples and Runbook Documentation
+Boundaries:
+
+- Do not collapse scenario-3 password setup/reset into ordinary sync.
+- Request and approval intake are out of band.
+- Delegated project-owner administration is not in the current scope.
+- A Keycloak realm administrator is the assumed Keycloak-side operator.
+- Direct iRODS-side changes require an iRODS `rodsadmin` or `groupadmin`
+  identity.
+- Keep Java Keycloak plugin work out of this repository unless the task is only
+  to define the Go service/API that a plugin would call.
+
+#### Sprint 1: Administrator Runbook and Keycloak Activity Planning
 
 Goal:
 
 ```text
-Turn the currently usable CLI workflow into administrator-facing examples and
-runbook documentation before adding another interface.
+Stabilize the administrator-facing CLI workflow documentation and decide how
+Keycloak administrative activity should drive iRODS mutation before adding the
+REST API.
 ```
 
-Activities:
+Completed documentation work:
 
-- Add administrator-facing examples for user provisioning, group provisioning,
-  membership reconciliation, repeat apply, and convergence checks.
-- Document expected command sequences for
+- `IRODS_KEYCLOAK_ADMINISTRATORS_GUIDE.md` now contains administrator-facing
+  examples for user provisioning, group provisioning, membership
+  reconciliation, repeat apply, and convergence checks.
+- The guide documents expected command sequences for
   `irods-kc-sync sync --dry-run --target=irods` and `irods-kc-sync apply`.
-- Include representative plan/apply output, review checkpoints, expected
+- The guide includes representative plan/apply output, review checkpoints,
   warnings, repeat-apply behavior, and follow-up dry-run convergence checks.
-- Make clear that request/approval intake is out of band: a Keycloak realm
-  administrator administers the needed user or group in Keycloak, then uses the
-  sync/apply workflow to provision the corresponding iRODS user, group, or
-  membership.
-- Document the current authority model: Keycloak realm admin on the Keycloak
-  side, and `rodsadmin`/`groupadmin` on the iRODS side for direct iRODS-side
-  changes.
+- The guide makes clear that request/approval intake is out of band: a Keycloak
+  realm administrator administers the needed user or group in Keycloak, then
+  uses the sync/apply workflow to provision the corresponding iRODS user,
+  group, or membership.
+- The guide documents the current authority model: Keycloak realm admin on the
+  Keycloak side, and `rodsadmin`/`groupadmin` on the iRODS side for direct
+  iRODS-side changes.
+- `README.md` now points to the administrators guide instead of duplicating the
+  detailed runbook.
 
-Planning task: Keycloak activity-driven iRODS mutation.
+Remaining planning task: Keycloak activity-driven iRODS mutation.
 
 - Describe how Keycloak-side administrative activities should drive iRODS
   mutations when Keycloak is the operator-facing control surface.
@@ -157,22 +136,17 @@ Planning task: Keycloak activity-driven iRODS mutation.
   failed iRODS mutation should block the initiating Keycloak action or produce a
   follow-up repair plan.
 - Keep this as a planning artifact in Sprint 1 unless the architecture decision
-  is clear. Do not start broad event-driven mutation before the runbook and
-  current CLI-driven model are documented.
+  is clear. Do not start broad event-driven mutation before the current
+  CLI-driven model and REST API equivalence path are stable.
 
 Exit criteria:
 
-- An administrator can follow the runbook to provision a Keycloak user into
-  iRODS, provision a Keycloak group into iRODS, reconcile selected group
-  membership drift, rerun apply safely, and confirm convergence.
-- The runbook explains how to inspect plan JSON and apply JSON at the level
-  needed for operator review without changing current CLI behavior.
-- The runbook does not introduce self-service request intake, delegated
-  project-owner administration, or scenario-3 password mutation as part of
-  ordinary sync.
 - The Sprint 1 planning notes include a decision record for whether
   Keycloak-activity-driven iRODS mutation belongs in this Go service, in a
   Keycloak Java plugin repository, or in a split plugin-plus-service design.
+- The decision record lists the supported Keycloak activities, intended iRODS
+  response, permission impact, reliability expectation, and owner repository for
+  each activity.
 
 #### Sprint 2: REST API Equivalent to CLI Plan/Apply
 
@@ -269,38 +243,6 @@ Deferred candidate:
   administrator is expected to know that a user or group is needed, administer
   it in Keycloak, and then use sync/apply to provision the corresponding iRODS
   user, group, or membership.
-
-### Tool Class: Keycloak-Driven iRODS Mutation Tooling
-
-This sprint introduces a separate tool class from the existing sync
-workflow.
-
-Purpose:
-
-```text
-Allow Keycloak-facing synchronization workflows to mutate iRODS users, groups,
-and group memberships directly, while still respecting scenario-specific
-credential rules.
-```
-
-This tool class should cover:
-
-- Keycloak-driven user provisioning into iRODS
-- Keycloak-driven group provisioning into iRODS
-- Keycloak-driven group-membership mutation into iRODS
-- synchronization and review behavior for these mutations
-- optional scenario-3 password-action JSON reporting
-- an initial CLI shape based on:
-  `sync --dry-run --target=irods`
-  `apply --plan ...`
-
-This tool class should not yet cover:
-
-- direct password mirroring as ordinary sync behavior
-- in-band email delivery or notification workflows
-- broad scenario support beyond scenarios 2 and 3
-- full mixed-direction bi-directional execution in one plan/apply slice
-
 
 ---
 
