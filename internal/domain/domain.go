@@ -100,11 +100,41 @@ type RepairRequest struct {
 	RequestMetadata
 }
 
+type EncodedCredential struct {
+	Encoding string `json:"encoding"`
+	Value    string `json:"value"`
+	KeyID    string `json:"key_id,omitempty"`
+}
+
+type KeycloakAdminEvent struct {
+	Realm          string         `json:"realm,omitempty"`
+	EventID        string         `json:"event_id,omitempty"`
+	Time           string         `json:"time,omitempty"`
+	OperationType  string         `json:"operation_type,omitempty"`
+	ResourceType   string         `json:"resource_type,omitempty"`
+	ResourcePath   string         `json:"resource_path,omitempty"`
+	Representation map[string]any `json:"representation,omitempty"`
+	Details        map[string]any `json:"details,omitempty"`
+}
+
+type IRODSAdminContext struct {
+	Zone       string            `json:"zone,omitempty"`
+	Username   string            `json:"username,omitempty"`
+	Host       string            `json:"host,omitempty"`
+	Port       int               `json:"port,omitempty"`
+	Resource   string            `json:"resource,omitempty"`
+	Credential EncodedCredential `json:"credential"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+}
+
 type KeycloakEventRequest struct {
 	RequestMetadata
-	EventID   string         `json:"event_id,omitempty"`
-	EventType string         `json:"event_type,omitempty"`
-	Payload   map[string]any `json:"payload,omitempty"`
+	EventID            string             `json:"event_id,omitempty"`
+	EventType          string             `json:"event_type,omitempty"`
+	IdempotencyKey     string             `json:"idempotency_key,omitempty"`
+	KeycloakAdminEvent KeycloakAdminEvent `json:"keycloak_admin_event"`
+	IRODSAdmin         IRODSAdminContext  `json:"irods_admin"`
+	Payload            map[string]any     `json:"payload,omitempty"`
 }
 
 type DiagnosticsRequest struct {
@@ -220,11 +250,20 @@ type StatusResponse struct {
 }
 
 type ConfigSummary struct {
-	ServiceName        string `json:"service_name"`
-	ListenAddress      string `json:"listen_address"`
-	IRODSZone          string `json:"irods_zone,omitempty"`
-	KeycloakRealm      string `json:"keycloak_realm,omitempty"`
-	KeycloakMirrorRoot string `json:"keycloak_mirror_root,omitempty"`
+	ServiceName                    string `json:"service_name"`
+	ListenAddress                  string `json:"listen_address"`
+	IRODSZone                      string `json:"irods_zone,omitempty"`
+	IRODSHost                      string `json:"irods_host,omitempty"`
+	IRODSPort                      int    `json:"irods_port,omitempty"`
+	IRODSAdminUser                 string `json:"irods_admin_user,omitempty"`
+	IRODSDefaultResource           string `json:"irods_default_resource,omitempty"`
+	KeycloakBaseURL                string `json:"keycloak_base_url,omitempty"`
+	KeycloakRealm                  string `json:"keycloak_realm,omitempty"`
+	KeycloakAdminRealm             string `json:"keycloak_admin_realm,omitempty"`
+	KeycloakAdminClientID          string `json:"keycloak_admin_client_id,omitempty"`
+	KeycloakMirrorRoot             string `json:"keycloak_mirror_root,omitempty"`
+	KeycloakEventSharedSecretSet   bool   `json:"keycloak_event_shared_secret_set"`
+	KeycloakEventSharedSecretModel string `json:"keycloak_event_shared_secret_model,omitempty"`
 }
 
 type ErrorResponse struct {

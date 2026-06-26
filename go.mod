@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/cyverse/go-irodsclient v0.20.1-0.20260605235210-f3125ea03517
 	github.com/michael-conway/go-irodsclient-extensions v0.0.0-20260625132823-a8d8221e0b62
+	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (
@@ -30,5 +31,4 @@ require (
 	golang.org/x/sys v0.37.0 // indirect
 	golang.org/x/term v0.36.0 // indirect
 	golang.org/x/text v0.30.0 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
 )

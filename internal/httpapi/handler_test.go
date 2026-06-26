@@ -125,3 +125,50 @@ func TestControlPlaneRoutesRemainRegistered(t *testing.T) {
 		})
 	}
 }
+
+func TestKeycloakEventRouteRequiresSharedSecretWhenConfigured(t *testing.T) {
+	cfg := config.Default()
+	cfg.KeycloakEventSharedSecret = "expected-secret"
+	handler := NewHandler(cfg, service.NewNotImplementedServices()).Routes()
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/v1/keycloak/events", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, rec.Code)
+	}
+}
+
+func TestKeycloakEventRouteRejectsInvalidSharedSecret(t *testing.T) {
+	cfg := config.Default()
+	cfg.KeycloakEventSharedSecret = "expected-secret"
+	handler := NewHandler(cfg, service.NewNotImplementedServices()).Routes()
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/v1/keycloak/events", nil)
+	req.Header.Set(keycloakEventSharedSecretHeader, "wrong-secret")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, rec.Code)
+	}
+}
+
+func TestKeycloakEventRouteAcceptsConfiguredSharedSecret(t *testing.T) {
+	cfg := config.Default()
+	cfg.KeycloakEventSharedSecret = "expected-secret"
+	handler := NewHandler(cfg, service.NewNotImplementedServices()).Routes()
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/v1/keycloak/events", nil)
+	req.Header.Set(keycloakEventSharedSecretHeader, "expected-secret")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected status %d, got %d", http.StatusNotImplemented, rec.Code)
+	}
+}

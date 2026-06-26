@@ -15,7 +15,11 @@ import (
 )
 
 func main() {
-	cfg := config.FromEnv()
+	cfg, err := config.Load()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "configuration error: %v\n", err)
+		os.Exit(2)
+	}
 	flag.StringVar(&cfg.ListenAddress, "listen-address", cfg.ListenAddress, "HTTP listen address")
 	flag.StringVar(&cfg.IRODSZone, "irods-zone", cfg.IRODSZone, "default iRODS zone")
 	flag.StringVar(&cfg.KeycloakRealm, "keycloak-realm", cfg.KeycloakRealm, "default Keycloak realm")

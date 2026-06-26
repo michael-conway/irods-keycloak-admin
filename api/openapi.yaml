@@ -5,25 +5,24 @@ info:
   description: |
     Private orchestration API for iRODS and Keycloak identity workflows.
 
-    This API owns Keycloak mirror synchronization, repair, bootstrap,
-    provisioning decisions, Keycloak event ingestion, and diagnostics. It is not
-    a generic iRODS REST API. Generic iRODS user, group, path, ticket, resource,
-    and metadata operations belong in irods-go-rest core APIs.
+    The current documented surface is intentionally narrow: service health,
+    non-secret status, and Keycloak event-listener callbacks for selected
+    administrative user, group, and membership activity.
+
+    This service is not a generic iRODS REST API. Generic iRODS user, group,
+    path, ticket, resource, and metadata operations belong in irods-go-rest core
+    APIs.
 servers:
   - url: http://localhost:8081
 tags:
   - name: status
     description: Service health and non-secret runtime information.
-  - name: sync
-    description: Control-plane planning and apply workflows spanning iRODS and Keycloak.
-  - name: repair
-    description: Plan-only repair workflows that make Keycloak mirror state match iRODS authority.
-  - name: provisioning
-    description: Keycloak-facing provisioning request and approval workflows.
   - name: events
-    description: Keycloak service callbacks and event ingestion.
-  - name: diagnostics
-    description: Configuration, mapping, and drift checks.
+    description: |
+      Keycloak service callbacks and event ingestion. The first supported
+      consumer is a thin Keycloak event-listener plugin that observes admin
+      user, group, and membership events, then submits compact callback
+      requests to this Go service.
 paths:
   /healthz:
     get:
@@ -49,172 +48,227 @@ paths:
       responses:
         "200":
           description: non-secret configuration summary
-  /admin/v1/sync/plan:
-    post:
-      tags: [sync]
-      operationId: planSync
-      summary: Plan a synchronization workflow
-      description: |
-        Produces a control-plane plan for synchronization work. This route is
-        not a generic iRODS user or group endpoint; generic iRODS HTTP resources
-        are exposed by irods-go-rest.
-      responses:
-        "200":
-          description: sync plan
-        "501":
-          description: endpoint scaffolded but not implemented
-  /admin/v1/sync/apply:
-    post:
-      tags: [sync]
-      operationId: applySync
-      summary: Apply an approved synchronization plan
-      description: |
-        Applies an explicit sync plan or plan reference. Apply operations are
-        orchestration workflows and must not be used as generic iRODS CRUD.
-      responses:
-        "202":
-          description: sync apply accepted
-        "501":
-          description: endpoint scaffolded but not implemented
-  /admin/v1/bootstrap/keycloak:
-    post:
-      tags: [sync]
-      operationId: bootstrapKeycloak
-      summary: Bootstrap Keycloak mirror state from iRODS
-      description: |
-        Initializes Keycloak mirror state from authoritative iRODS users,
-        groups, and memberships.
-      responses:
-        "202":
-          description: bootstrap accepted
-        "501":
-          description: endpoint scaffolded but not implemented
-  /admin/v1/repair/keycloak:
-    post:
-      tags: [repair]
-      operationId: repairKeycloak
-      summary: Plan Keycloak mirror repair from iRODS authority
-      description: |
-        Reads authoritative iRODS state through the direct adapter and reads
-        Keycloak mirror state through Keycloak Admin REST. Returns a repair plan
-        only and does not mutate either system.
-      responses:
-        "200":
-          description: repair plan
-        "501":
-          description: endpoint scaffolded but not implemented
   /admin/v1/keycloak/events:
     post:
       tags: [events]
       operationId: ingestKeycloakEvent
       summary: Ingest a Keycloak event
       description: |
-        Private callback endpoint for Keycloak-originated events. Event handling
-        may emit control-plane work but does not replace generic iRODS REST APIs.
+        Private callback endpoint for Keycloak-originated administrative
+        events.
+
+        This endpoint is the initial HTTP boundary for the Keycloak
+        event-listener plugin. The plugin should remain thin: observe the
+        Keycloak admin event, include enough event context for idempotency and
+        audit, include an encoded iRODS admin credential envelope configured in
+        the Keycloak-side service, and call this endpoint with a tight timeout.
+
+        The Go service owns mapping resolution, iRODS mutation, audit, and
+        retry behavior. The plugin must not embed broad iRODS administration
+        logic or Java iRODS client-library behavior.
+
+        Authentication starts with a shared secret passed in
+        `X-IRODS-KC-Shared-Secret`. This is an initial private-network
+        trust model, not the final hardening story. Later hardening may add
+        mTLS, signed event bodies, key rotation, or service-account tokens.
       responses:
         "202":
           description: event accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventResult"
+        "401":
+          description: missing shared secret
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: invalid shared secret
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "501":
           description: endpoint scaffolded but not implemented
-  /admin/v1/provisioning/users/{keycloak_user_id}/plan:
-    post:
-      tags: [provisioning]
-      operationId: planProvisionUser
-      summary: Plan provisioning for one Keycloak user
-      parameters:
-        - $ref: "#/components/parameters/KeycloakUserID"
-      responses:
-        "200":
-          description: provisioning plan
-        "501":
-          description: endpoint scaffolded but not implemented
-  /admin/v1/provisioning/users/{keycloak_user_id}/apply:
-    post:
-      tags: [provisioning]
-      operationId: applyProvisionUser
-      summary: Apply provisioning for one Keycloak user
-      parameters:
-        - $ref: "#/components/parameters/KeycloakUserID"
-      responses:
-        "202":
-          description: provisioning apply accepted
-        "501":
-          description: endpoint scaffolded but not implemented
-  /admin/v1/provisioning/requests:
-    post:
-      tags: [provisioning]
-      operationId: createProvisioningRequest
-      summary: Create a provisioning request
-      responses:
-        "202":
-          description: provisioning request accepted
-        "501":
-          description: endpoint scaffolded but not implemented
-  /admin/v1/provisioning/requests/{request_id}/approve:
-    post:
-      tags: [provisioning]
-      operationId: approveProvisioningRequest
-      summary: Approve a provisioning request
-      parameters:
-        - $ref: "#/components/parameters/RequestID"
-      responses:
-        "202":
-          description: provisioning request approval accepted
-        "501":
-          description: endpoint scaffolded but not implemented
-  /admin/v1/provisioning/requests/{request_id}/reject:
-    post:
-      tags: [provisioning]
-      operationId: rejectProvisioningRequest
-      summary: Reject a provisioning request
-      parameters:
-        - $ref: "#/components/parameters/RequestID"
-      responses:
-        "202":
-          description: provisioning request rejection accepted
-        "501":
-          description: endpoint scaffolded but not implemented
-  /admin/v1/diagnostics/check-config:
-    post:
-      tags: [diagnostics]
-      operationId: checkConfig
-      summary: Check runtime configuration
-      responses:
-        "200":
-          description: configuration diagnostic result
-        "501":
-          description: endpoint scaffolded but not implemented
-  /admin/v1/diagnostics/check-mapping:
-    post:
-      tags: [diagnostics]
-      operationId: checkMapping
-      summary: Check identity mapping policy
-      responses:
-        "200":
-          description: mapping diagnostic result
-        "501":
-          description: endpoint scaffolded but not implemented
-  /admin/v1/diagnostics/check-drift:
-    post:
-      tags: [diagnostics]
-      operationId: checkDrift
-      summary: Check iRODS and Keycloak mirror drift
-      responses:
-        "200":
-          description: drift diagnostic result
-        "501":
-          description: endpoint scaffolded but not implemented
+      security:
+        - KeycloakEventSharedSecret: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KeycloakEventRequest"
 components:
-  parameters:
-    KeycloakUserID:
-      name: keycloak_user_id
-      in: path
-      required: true
-      schema:
-        type: string
-    RequestID:
-      name: request_id
-      in: path
-      required: true
-      schema:
-        type: string
+  securitySchemes:
+    KeycloakEventSharedSecret:
+      type: apiKey
+      in: header
+      name: X-IRODS-KC-Shared-Secret
+      description: |
+        Shared secret known to the Keycloak event-listener plugin and this Go
+        service. The service validates the exact configured value before
+        decoding and accepting Keycloak event callback requests.
+  schemas:
+    Actor:
+      type: object
+      properties:
+        type:
+          type: string
+          examples: [keycloak_admin]
+        id:
+          type: string
+        username:
+          type: string
+        client_id:
+          type: string
+    RequestMetadata:
+      type: object
+      properties:
+        actor:
+          $ref: "#/components/schemas/Actor"
+        source:
+          type: string
+          examples: [keycloak-event-listener]
+        reason:
+          type: string
+        realm:
+          type: string
+        zone:
+          type: string
+        dry_run:
+          type: boolean
+          default: false
+    EncodedCredential:
+      type: object
+      required: [encoding, value]
+      description: |
+        Encoded iRODS admin credential supplied by the Keycloak-side service.
+
+        The initial model intentionally treats this as an opaque encoded
+        envelope so the Keycloak plugin does not need iRODS client libraries.
+        The value must be protected in transit and at rest. Plain base64 is
+        only encoding, not encryption; production use should prefer an encrypted
+        envelope or a deploy-time secret integration.
+      properties:
+        encoding:
+          type: string
+          examples: [base64, sealed-box-v1]
+        value:
+          type: string
+          format: password
+        key_id:
+          type: string
+          description: Optional key identifier for encrypted or rotated envelopes.
+    IRODSAdminContext:
+      type: object
+      required: [credential]
+      description: |
+        iRODS admin connection context for the mutation attempt. This starts
+        with a rodsadmin credential envelope encoded in the Keycloak service.
+      properties:
+        zone:
+          type: string
+        username:
+          type: string
+          examples: [rods]
+        host:
+          type: string
+        port:
+          type: integer
+          format: int32
+          examples: [1247]
+        resource:
+          type: string
+        credential:
+          $ref: "#/components/schemas/EncodedCredential"
+        attributes:
+          type: object
+          additionalProperties:
+            type: string
+    KeycloakAdminEvent:
+      type: object
+      description: |
+        Normalized Keycloak admin event context captured by the Java listener.
+        The Go service may fetch current Keycloak state before mutating iRODS
+        when the event payload is insufficient or stale.
+      properties:
+        realm:
+          type: string
+        event_id:
+          type: string
+        time:
+          type: string
+          format: date-time
+        operation_type:
+          type: string
+          examples: [CREATE, UPDATE, DELETE]
+        resource_type:
+          type: string
+          examples: [USER, GROUP, GROUP_MEMBERSHIP]
+        resource_path:
+          type: string
+          examples: [users/2f5f4c4f-0a2a-41e1-9b57-5c78f6049d32]
+        representation:
+          type: object
+          additionalProperties: true
+        details:
+          type: object
+          additionalProperties: true
+    KeycloakEventRequest:
+      allOf:
+        - $ref: "#/components/schemas/RequestMetadata"
+        - type: object
+          required: [event_type, idempotency_key, keycloak_admin_event, irods_admin]
+          properties:
+            event_id:
+              type: string
+              description: Stable Keycloak event ID when available.
+            event_type:
+              type: string
+              examples: [keycloak.admin.user.create]
+            idempotency_key:
+              type: string
+              description: Stable key used to safely replay the callback.
+            keycloak_admin_event:
+              $ref: "#/components/schemas/KeycloakAdminEvent"
+            irods_admin:
+              $ref: "#/components/schemas/IRODSAdminContext"
+            payload:
+              type: object
+              additionalProperties: true
+    Warning:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+    EventResult:
+      type: object
+      required: [status, warnings]
+      properties:
+        status:
+          type: string
+          examples: [accepted]
+        request_id:
+          type: string
+        warnings:
+          type: array
+          items:
+            $ref: "#/components/schemas/Warning"
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        request_id:
+          type: string
+        details:
+          type: object
+          additionalProperties: true

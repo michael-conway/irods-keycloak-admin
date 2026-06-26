@@ -1,0 +1,42 @@
+# Sample local configuration for irods-keycloak-admin.
+#
+# Assumptions:
+# - iRODS is provided by ../irods-grid-stack on localhost.
+# - Keycloak is provided by deployments/docker-test-framework/5-0 in this repo.
+# - This file is for local development and disposable e2e stacks.
+#
+# Use:
+#   export IRODS_KC_CONFIG_FILE=deployments/irods-keycloak-admin.grid-stack.sample.yaml
+#   irods-kc-admin-server
+
+ServiceName: irods-keycloak-admin
+ListenAddress: :8081
+PublicURL: http://127.0.0.1:8081
+LogLevel: info
+
+IRODSHost: 127.0.0.1
+IRODSPort: 1247
+IRODSZone: tempZone
+IRODSAdminUser: rods
+IRODSAdminPassword: rods
+# IRODSAdminPasswordFile: /run/secrets/irods-admin-password
+IRODSDefaultResource: providerResc
+IRODSAuthScheme: native
+IRODSNegotiationPolicy: CS_NEG_DONT_CARE
+
+KeycloakBaseURL: https://127.0.0.1:8443
+KeycloakRealm: irods
+KeycloakAdminRealm: master
+KeycloakAdminUser: admin
+KeycloakAdminPassword: admin
+# KeycloakAdminPasswordFile: /run/secrets/keycloak-admin-password
+KeycloakAdminClientID: irods-kc-admin-api
+KeycloakAdminClientSecret: irods-kc-admin-api-secret
+# KeycloakAdminClientSecretFile: /run/secrets/keycloak-admin-client-secret
+KeycloakInsecureSkipVerify: true
+KeycloakMirrorRoot: /irods
+
+# Shared secret expected from the Keycloak event-listener plugin in
+# X-IRODS-KC-Shared-Secret. Replace for any non-disposable environment.
+KeycloakEventSharedSecret: local-irods-keycloak-admin-event-secret
+# KeycloakEventSharedSecretFile: /run/secrets/irods-kc-event-shared-secret

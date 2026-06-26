@@ -182,6 +182,9 @@ func (h *Handler) postRepairKeycloak(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) postKeycloakEvent(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeKeycloakEvent(w, r) {
+		return
+	}
 	var req domain.KeycloakEventRequest
 	if !decodeRequest(w, r, &req) {
 		return

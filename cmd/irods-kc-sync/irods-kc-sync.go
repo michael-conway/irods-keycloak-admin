@@ -67,19 +67,19 @@ func runRepairKeycloak(args []string, stdout io.Writer, stderr io.Writer) int {
 	realm := flags.String("realm", firstNonEmpty(cfg.KeycloakRealm, envFirst("IRODS_KC_E2E_KEYCLOAK_REALM")), "Keycloak realm containing the users/groups to inspect; required if not configured in environment")
 	zone := flags.String("zone", firstNonEmpty(cfg.IRODSZone, envFirst("IRODS_KC_E2E_IRODS_ZONE")), "iRODS zone used for user/group lookup and planned mutations; required unless provided by configuration/environment")
 
-	irodsHost := flags.String("irods-host", envFirst("IRODS_KC_IRODS_HOST", "IRODS_KC_E2E_IRODS_PROVIDER_HOST"), "iRODS provider host for direct admin connection")
-	irodsPort := flags.Int("irods-port", envInt(0, "IRODS_KC_IRODS_PORT", "IRODS_KC_E2E_IRODS_PROVIDER_PORT"), "iRODS provider port for direct admin connection; required with --irods-host unless provided by environment")
-	irodsUser := flags.String("irods-user", envFirst("IRODS_KC_IRODS_USER", "IRODS_KC_IRODS_ADMIN_USER", "IRODS_KC_E2E_IRODS_ADMIN_USER"), "iRODS admin username for direct connection; must be allowed to create users/groups, change group membership, and write mapping AVUs")
-	irodsPassword := flags.String("irods-password", envFirst("IRODS_KC_IRODS_PASSWORD", "IRODS_KC_IRODS_ADMIN_PASSWORD", "IRODS_KC_E2E_IRODS_ADMIN_PASSWORD"), "iRODS password for --irods-user")
-	irodsResource := flags.String("irods-resource", envFirst("IRODS_KC_IRODS_RESOURCE", "IRODS_KC_E2E_IRODS_PROVIDER_RESOURCE"), "default iRODS resource for direct connection; used for account initialization, not for sync policy")
+	irodsHost := flags.String("irods-host", firstNonEmpty(cfg.IRODSHost, envFirst("IRODS_KC_E2E_IRODS_PROVIDER_HOST")), "iRODS provider host for direct admin connection")
+	irodsPort := flags.Int("irods-port", firstNonZero(cfg.IRODSPort, envInt(0, "IRODS_KC_E2E_IRODS_PROVIDER_PORT")), "iRODS provider port for direct admin connection; required with --irods-host unless provided by environment")
+	irodsUser := flags.String("irods-user", firstNonEmpty(cfg.IRODSAdminUser, envFirst("IRODS_KC_E2E_IRODS_ADMIN_USER")), "iRODS admin username for direct connection; must be allowed to create users/groups, change group membership, and write mapping AVUs")
+	irodsPassword := flags.String("irods-password", firstNonEmpty(cfg.IRODSAdminPassword, envFirst("IRODS_KC_E2E_IRODS_ADMIN_PASSWORD")), "iRODS password for --irods-user")
+	irodsResource := flags.String("irods-resource", firstNonEmpty(cfg.IRODSDefaultResource, envFirst("IRODS_KC_E2E_IRODS_PROVIDER_RESOURCE")), "default iRODS resource for direct connection; used for account initialization, not for sync policy")
 
-	keycloakURL := flags.String("keycloak-url", envFirst("IRODS_KC_KEYCLOAK_BASE_URL", "IRODS_KC_E2E_KEYCLOAK_BASE_URL"), "Keycloak base URL, for example https://keycloak.example.org; defaults to https://127.0.0.1:8443 if unset")
-	keycloakAdminRealm := flags.String("keycloak-admin-realm", envFirst("IRODS_KC_KEYCLOAK_ADMIN_REALM"), "Keycloak realm used to obtain the admin token; leave empty for the client default when supported")
-	keycloakClientID := flags.String("keycloak-client-id", envFirst("IRODS_KC_KEYCLOAK_ADMIN_CLIENT_ID"), "Keycloak admin token client ID for client-credentials or direct-grant authentication")
-	keycloakClientSecret := flags.String("keycloak-client-secret", envFirst("IRODS_KC_KEYCLOAK_ADMIN_CLIENT_SECRET"), "Keycloak admin token client secret; used with --keycloak-client-id when the client is confidential")
-	keycloakAdminUser := flags.String("keycloak-admin-user", envFirst("IRODS_KC_KEYCLOAK_ADMIN_USER", "IRODS_KC_E2E_KEYCLOAK_ADMIN_USER", "KEYCLOAK_ADMIN"), "Keycloak admin username for password-grant authentication when client credentials are not used")
-	keycloakAdminPassword := flags.String("keycloak-admin-password", envFirst("IRODS_KC_KEYCLOAK_ADMIN_PASSWORD", "IRODS_KC_E2E_KEYCLOAK_ADMIN_PASSWORD", "KEYCLOAK_ADMIN_PASSWORD"), "Keycloak admin password for --keycloak-admin-user")
-	keycloakInsecureSkipVerify := flags.Bool("keycloak-insecure-skip-verify", envBool(false, "IRODS_KC_KEYCLOAK_INSECURE_SKIP_VERIFY", "IRODS_KC_E2E_KEYCLOAK_INSECURE_SKIP_VERIFY"), "skip Keycloak TLS certificate verification; use only for local test stacks with self-signed certificates")
+	keycloakURL := flags.String("keycloak-url", firstNonEmpty(cfg.KeycloakBaseURL, envFirst("IRODS_KC_E2E_KEYCLOAK_BASE_URL")), "Keycloak base URL, for example https://keycloak.example.org; defaults to https://127.0.0.1:8443 if unset")
+	keycloakAdminRealm := flags.String("keycloak-admin-realm", cfg.KeycloakAdminRealm, "Keycloak realm used to obtain the admin token; leave empty for the client default when supported")
+	keycloakClientID := flags.String("keycloak-client-id", cfg.KeycloakAdminClientID, "Keycloak admin token client ID for client-credentials or direct-grant authentication")
+	keycloakClientSecret := flags.String("keycloak-client-secret", cfg.KeycloakAdminClientSecret, "Keycloak admin token client secret; used with --keycloak-client-id when the client is confidential")
+	keycloakAdminUser := flags.String("keycloak-admin-user", firstNonEmpty(cfg.KeycloakAdminUser, envFirst("IRODS_KC_E2E_KEYCLOAK_ADMIN_USER", "KEYCLOAK_ADMIN")), "Keycloak admin username for password-grant authentication when client credentials are not used")
+	keycloakAdminPassword := flags.String("keycloak-admin-password", firstNonEmpty(cfg.KeycloakAdminPassword, envFirst("IRODS_KC_E2E_KEYCLOAK_ADMIN_PASSWORD", "KEYCLOAK_ADMIN_PASSWORD")), "Keycloak admin password for --keycloak-admin-user")
+	keycloakInsecureSkipVerify := flags.Bool("keycloak-insecure-skip-verify", cfg.KeycloakInsecureSkipVerify || envBool(false, "IRODS_KC_E2E_KEYCLOAK_INSECURE_SKIP_VERIFY"), "skip Keycloak TLS certificate verification; use only for local test stacks with self-signed certificates")
 	keycloakMirrorRoot := flags.String("keycloak-mirror-root", firstNonEmpty(cfg.KeycloakMirrorRoot, envFirst("IRODS_KC_E2E_KEYCLOAK_MIRROR_ROOT")), "managed Keycloak group root used for --target=keycloak mirror repair, such as /irods")
 	outPath := flags.String("out", "", "write the generated dry-run plan JSON to this file while also writing the same JSON to stdout")
 	planPath := flags.String("plan-path", "", "deprecated alias for --out; if both are provided, they must name the same file")
@@ -240,19 +240,19 @@ func runApply(args []string, stdout io.Writer, stderr io.Writer) int {
 	zone := flags.String("zone", firstNonEmpty(cfg.IRODSZone, envFirst("IRODS_KC_E2E_IRODS_ZONE")), "expected iRODS zone for the plan; defaults to the plan zone when omitted and no environment value is set")
 	prompts := flags.String("prompts", string(planreview.PromptModeRequired), "review prompt policy: required prompts only for risky operations, all prompts for every operation, none applies without interactive confirmation")
 
-	irodsHost := flags.String("irods-host", envFirst("IRODS_KC_IRODS_HOST", "IRODS_KC_E2E_IRODS_PROVIDER_HOST"), "iRODS provider host for direct admin connection; used only when applying iRODS-target plans")
-	irodsPort := flags.Int("irods-port", envInt(0, "IRODS_KC_IRODS_PORT", "IRODS_KC_E2E_IRODS_PROVIDER_PORT"), "iRODS provider port for direct admin connection; used only when applying iRODS-target plans")
-	irodsUser := flags.String("irods-user", envFirst("IRODS_KC_IRODS_USER", "IRODS_KC_IRODS_ADMIN_USER", "IRODS_KC_E2E_IRODS_ADMIN_USER"), "iRODS admin username for applying iRODS-target plans")
-	irodsPassword := flags.String("irods-password", envFirst("IRODS_KC_IRODS_PASSWORD", "IRODS_KC_IRODS_ADMIN_PASSWORD", "IRODS_KC_E2E_IRODS_ADMIN_PASSWORD"), "iRODS password for --irods-user when using direct connection")
-	irodsResource := flags.String("irods-resource", envFirst("IRODS_KC_IRODS_RESOURCE", "IRODS_KC_E2E_IRODS_PROVIDER_RESOURCE"), "default iRODS resource for direct connection; used for account initialization, not for sync policy")
+	irodsHost := flags.String("irods-host", firstNonEmpty(cfg.IRODSHost, envFirst("IRODS_KC_E2E_IRODS_PROVIDER_HOST")), "iRODS provider host for direct admin connection; used only when applying iRODS-target plans")
+	irodsPort := flags.Int("irods-port", firstNonZero(cfg.IRODSPort, envInt(0, "IRODS_KC_E2E_IRODS_PROVIDER_PORT")), "iRODS provider port for direct admin connection; used only when applying iRODS-target plans")
+	irodsUser := flags.String("irods-user", firstNonEmpty(cfg.IRODSAdminUser, envFirst("IRODS_KC_E2E_IRODS_ADMIN_USER")), "iRODS admin username for applying iRODS-target plans")
+	irodsPassword := flags.String("irods-password", firstNonEmpty(cfg.IRODSAdminPassword, envFirst("IRODS_KC_E2E_IRODS_ADMIN_PASSWORD")), "iRODS password for --irods-user when using direct connection")
+	irodsResource := flags.String("irods-resource", firstNonEmpty(cfg.IRODSDefaultResource, envFirst("IRODS_KC_E2E_IRODS_PROVIDER_RESOURCE")), "default iRODS resource for direct connection; used for account initialization, not for sync policy")
 
-	keycloakURL := flags.String("keycloak-url", envFirst("IRODS_KC_KEYCLOAK_BASE_URL", "IRODS_KC_E2E_KEYCLOAK_BASE_URL"), "Keycloak base URL used when applying Keycloak-target mirror plans")
-	keycloakAdminRealm := flags.String("keycloak-admin-realm", envFirst("IRODS_KC_KEYCLOAK_ADMIN_REALM"), "Keycloak realm used to obtain the admin token; leave empty for the client default when supported")
-	keycloakClientID := flags.String("keycloak-client-id", envFirst("IRODS_KC_KEYCLOAK_ADMIN_CLIENT_ID"), "Keycloak admin token client ID for client-credentials or direct-grant authentication")
-	keycloakClientSecret := flags.String("keycloak-client-secret", envFirst("IRODS_KC_KEYCLOAK_ADMIN_CLIENT_SECRET"), "Keycloak admin token client secret; used with --keycloak-client-id when the client is confidential")
-	keycloakAdminUser := flags.String("keycloak-admin-user", envFirst("IRODS_KC_KEYCLOAK_ADMIN_USER", "IRODS_KC_E2E_KEYCLOAK_ADMIN_USER", "KEYCLOAK_ADMIN"), "Keycloak admin username for password-grant authentication when client credentials are not used")
-	keycloakAdminPassword := flags.String("keycloak-admin-password", envFirst("IRODS_KC_KEYCLOAK_ADMIN_PASSWORD", "IRODS_KC_E2E_KEYCLOAK_ADMIN_PASSWORD", "KEYCLOAK_ADMIN_PASSWORD"), "Keycloak admin password for --keycloak-admin-user")
-	keycloakInsecureSkipVerify := flags.Bool("keycloak-insecure-skip-verify", envBool(false, "IRODS_KC_KEYCLOAK_INSECURE_SKIP_VERIFY", "IRODS_KC_E2E_KEYCLOAK_INSECURE_SKIP_VERIFY"), "skip Keycloak TLS certificate verification; use only for local test stacks with self-signed certificates")
+	keycloakURL := flags.String("keycloak-url", firstNonEmpty(cfg.KeycloakBaseURL, envFirst("IRODS_KC_E2E_KEYCLOAK_BASE_URL")), "Keycloak base URL used when applying Keycloak-target mirror plans")
+	keycloakAdminRealm := flags.String("keycloak-admin-realm", cfg.KeycloakAdminRealm, "Keycloak realm used to obtain the admin token; leave empty for the client default when supported")
+	keycloakClientID := flags.String("keycloak-client-id", cfg.KeycloakAdminClientID, "Keycloak admin token client ID for client-credentials or direct-grant authentication")
+	keycloakClientSecret := flags.String("keycloak-client-secret", cfg.KeycloakAdminClientSecret, "Keycloak admin token client secret; used with --keycloak-client-id when the client is confidential")
+	keycloakAdminUser := flags.String("keycloak-admin-user", firstNonEmpty(cfg.KeycloakAdminUser, envFirst("IRODS_KC_E2E_KEYCLOAK_ADMIN_USER", "KEYCLOAK_ADMIN")), "Keycloak admin username for password-grant authentication when client credentials are not used")
+	keycloakAdminPassword := flags.String("keycloak-admin-password", firstNonEmpty(cfg.KeycloakAdminPassword, envFirst("IRODS_KC_E2E_KEYCLOAK_ADMIN_PASSWORD", "KEYCLOAK_ADMIN_PASSWORD")), "Keycloak admin password for --keycloak-admin-user")
+	keycloakInsecureSkipVerify := flags.Bool("keycloak-insecure-skip-verify", cfg.KeycloakInsecureSkipVerify || envBool(false, "IRODS_KC_E2E_KEYCLOAK_INSECURE_SKIP_VERIFY"), "skip Keycloak TLS certificate verification; use only for local test stacks with self-signed certificates")
 	keycloakMirrorRoot := flags.String("keycloak-mirror-root", firstNonEmpty(cfg.KeycloakMirrorRoot, envFirst("IRODS_KC_E2E_KEYCLOAK_MIRROR_ROOT")), "managed Keycloak group root used to validate/apply Keycloak mirror operations, such as /irods")
 
 	if err := flags.Parse(args); err != nil {
@@ -803,6 +803,15 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstNonZero(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func envFirst(names ...string) string {

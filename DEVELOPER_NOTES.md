@@ -106,38 +106,144 @@ Completed documentation work:
 - `README.md` now points to the administrators guide instead of duplicating the
   detailed runbook.
 
-Remaining planning task: Keycloak activity-driven iRODS mutation.
+Decision record: Keycloak activity-driven iRODS mutation.
 
-- Describe how Keycloak-side administrative activities should drive iRODS
-  mutations when Keycloak is the operator-facing control surface.
-- Activities to consider:
-  user add, user update, user delete,
-  group add, group update, group delete,
-  group membership add, and group membership remove.
-- For each activity, define the intended iRODS response:
-  create/update/remove iRODS user metadata,
-  create/update/remove iRODS group metadata,
-  add/remove iRODS group membership,
-  or intentionally do nothing when the activity is outside the supported
-  authority model.
-- Explicitly describe permission implications. Keycloak group membership changes
-  may change effective iRODS permissions because iRODS ACLs often grant access
-  to groups. The task is to map Keycloak membership activity to iRODS group
-  membership mutation, not to invent a separate permission database.
-- Identify the event source and integration shape:
-  Keycloak Admin REST polling, a Go service endpoint called by a portal, or a
-  Java Keycloak event-listener/plugin.
-- If the correct implementation is a Java Keycloak plugin, transfer this task
-  to a new plugin repository rather than implementing Java inside
-  `irods-keycloak-admin`. This repository may still own the Go service/API that
-  the plugin calls.
-- Define reliability expectations before implementation:
-  idempotency, retry behavior, audit events, failure handling, and whether
-  failed iRODS mutation should block the initiating Keycloak action or produce a
-  follow-up repair plan.
-- Keep this as a planning artifact in Sprint 1 unless the architecture decision
-  is clear. Do not start broad event-driven mutation before the current
-  CLI-driven model and REST API equivalence path are stable.
+Status:
+
+- Planning artifact for Sprint 1.
+- Do not implement broad event-driven mutation before the current CLI-driven
+  model is stable. A thin Keycloak plugin can develop concurrently with the
+  proposed HTTP API for Keycloak sync, as long as the plugin consumes the same
+  Go service contracts rather than growing separate Java-side iRODS logic.
+- The preferred implementation shape is a Keycloak plugin plus Go service:
+  a thin Java Keycloak event-listener/plugin observes supported Keycloak
+  administrative events and calls authenticated, idempotent endpoints owned by
+  this Go service.
+- Java code belongs in a separate Keycloak plugin repository. This repository
+  may own the Go service/API, plan/apply contracts, audit records, and iRODS
+  mutation logic that the plugin calls.
+- "Direct iRODS mutation from Keycloak" means that Keycloak administrative user
+  and group actions can synchronously trigger iRODS mutation through the Go
+  service. It does not mean embedding broad iRODS administration, reconciliation
+  logic, or Java iRODS client-library usage inside the Keycloak plugin.
+- A portal or automation client may call the same Go service endpoints directly
+  when the Keycloak action is initiated outside the Keycloak Admin Console.
+- Keycloak Admin REST polling is a fallback for drift detection and repair, not
+  the preferred source for low-latency admin activity handling.
+
+Authority model:
+
+- Keycloak is the operator-facing control surface for selected user, group, and
+  membership intent.
+- iRODS remains the data authorization system. iRODS ACLs, inheritance, tickets,
+  collections, data objects, resources, and quotas are not mirrored into a
+  separate permission database.
+- Keycloak membership changes may change effective iRODS permissions because
+  iRODS ACLs often grant access to groups. The integration maps Keycloak
+  membership activity to iRODS group membership mutation only; effective access
+  remains whatever iRODS computes from its native ACL model.
+- Direct iRODS-side changes still require an iRODS `rodsadmin` or `groupadmin`
+  identity. Keycloak-initiated iRODS mutations must run through an iRODS admin
+  service credential with narrowly documented scope.
+- Deletions remain conservative. A Keycloak delete event does not automatically
+  prove that the corresponding iRODS user or group and its data/ACL history are
+  safe to remove.
+
+Supported activity mapping:
+
+| Keycloak activity | Intended iRODS response | Permission implication | Event source / owner |
+|---|---|---|---|
+| User add | Plan and apply iRODS user creation when the selected Keycloak user is in scope. Add or sync mapping AVUs such as Keycloak realm/user ID evidence. | No direct data permission is granted by user creation alone, except access implied by default iRODS policy. | Portal or plugin calls Go service. Existing CLI remains the reference behavior until REST equivalence is complete. |
+| User update | Sync iRODS user mapping metadata when stable identity evidence changes or missing AVUs need repair. Do not rename or delete the iRODS user automatically unless a future explicit rename policy is approved. | Metadata repair should not change iRODS ACLs. A future rename policy would need separate safety review because ACLs and ownership can reference user names. | Portal or plugin calls Go service; polling may detect repair drift. |
+| User delete | Do not automatically remove the iRODS user in the first event-driven model. Plan a reviewed repair/deprovisioning action, such as marking stale mapping metadata or producing an operator task. | Removing an iRODS user can affect ownership, ACLs, audit history, and data access. It must not be an unreviewed side effect of a Keycloak delete. | Plugin may emit an audit event to the Go service; Go service creates a follow-up repair plan rather than immediate delete. |
+| Group add | Plan and apply iRODS group creation when the selected Keycloak group is in scope. Add or sync mapping AVUs such as Keycloak realm/group ID/path evidence. | Group creation alone grants no data access unless existing iRODS policy or ACL templates already reference that group name. | Portal or plugin calls Go service. Existing CLI group provisioning remains the reference behavior until REST equivalence is complete. |
+| Group update | Sync iRODS group mapping metadata for stable Keycloak group ID/path evidence. Do not rename or delete the iRODS group automatically unless a future explicit rename policy is approved. | Metadata repair should not change iRODS ACLs. A future rename policy would need separate safety review because ACLs commonly reference group names. | Portal or plugin calls Go service; polling may detect repair drift. |
+| Group delete | Do not automatically remove the iRODS group in the first event-driven model. Produce a reviewed deprovisioning or stale-mapping repair plan. | Removing a group can immediately remove effective access for every ACL granted to that group and may affect collaboration history. It must be reviewed. | Plugin may emit an audit event to the Go service; Go service creates a follow-up repair plan rather than immediate delete. |
+| Group membership add | Add the corresponding iRODS user to the corresponding iRODS group when both mapped objects are in scope. If either side is missing or ambiguous, produce a repair plan instead of guessing. | This may grant effective iRODS access wherever ACLs grant access to the group. No separate permission store is created. | Portal or plugin calls Go service. The Go service should reuse selected membership reconciliation logic. |
+| Group membership remove | Remove the corresponding iRODS user from the corresponding iRODS group when both mapped objects are in scope and removal policy allows it. If ambiguous or outside scope, produce a reviewed repair plan. | This may revoke effective iRODS access wherever ACLs grant access to the group. The integration does not enumerate or rewrite all affected ACLs as part of the membership event. | Portal or plugin calls Go service. The Go service should reuse selected membership reconciliation logic. |
+
+Reliability expectations before implementation:
+
+- Idempotency: every endpoint called by a plugin, portal, or polling worker must
+  be safe to repeat. Create, metadata sync, membership add, and membership
+  remove should converge on the desired state rather than fail on already-done
+  state.
+- Correlation: every request should carry a stable event ID or client-generated
+  idempotency key, Keycloak realm, actor, target object ID/path, requested
+  activity, and source system.
+- Retry behavior: transient iRODS or Keycloak failures should be retried by the
+  caller or service worker with bounded backoff. Repeated failures must produce
+  an auditable repair item rather than silent drift.
+- Audit events: record actor, source, activity, target Keycloak object,
+  resolved iRODS object, plan ID, applied/skipped/failed counts, warnings, and
+  final disposition.
+- Failure handling: for normal Keycloak Admin Console activity, failed iRODS
+  mutation should not block the initiating Keycloak action in the first design.
+  It should create a follow-up repair plan or failed audit event that an
+  operator can review and replay.
+- Blocking mode: only a purpose-built portal or future tightly integrated
+  workflow should block the initiating action on iRODS mutation failure, and
+  only when the user experience explicitly presents the operation as an atomic
+  Keycloak-plus-iRODS administrative action.
+- Ordering: membership events require mapped users and groups. If a membership
+  event arrives before user/group provisioning has converged, the service should
+  either retry after dependency repair or return a repair plan that provisions
+  the missing dependency first.
+- Scope guardrails: ignore or audit-only events for objects outside the
+  configured realm, group root, zone, or managed mapping policy. Do not infer
+  authority from name matches alone when stable mapping evidence is missing.
+
+Owner repository decision:
+
+| Component | Repository owner | Notes |
+|---|---|---|
+| Go plan/apply service, idempotent mutation endpoints, audit contracts, iRODS adapter behavior | `irods-keycloak-admin` | This repository remains the owner for iRODS mutation logic and REST API equivalence with the CLI. The same HTTP API should serve CLI-equivalent sync, portal calls, and plugin-triggered user/group management. |
+| Java Keycloak event-listener/plugin | New plugin repository, for example `irods-keycloak-spi` | Keep Java out of this repository. The plugin should observe events, authenticate to the Go service, pass minimal event context, and avoid direct iRODS client-library logic. |
+| Portal or automation caller | External consumer of `irods-keycloak-admin` service API | A portal can use the service directly without a Keycloak plugin when it initiates the Keycloak and iRODS actions itself. |
+| Polling drift detector | `irods-keycloak-admin`, later sprint only | Use for repair and convergence, not as the primary event source for immediate admin activity. |
+
+Concurrency with REST API work:
+
+- The Keycloak plugin repository and the `irods-keycloak-admin` HTTP API can be
+  developed concurrently if the API contract is treated as the shared boundary.
+- The plugin should start with the narrowest supported user/group management
+  events and should reuse the Go service's idempotent mutation endpoints.
+- The Go service should avoid plugin-specific special cases where possible:
+  plugin calls, portal calls, and future automation should share request and
+  audit shapes.
+- Plugin development should not block CLI hardening or REST API equivalence.
+  The CLI remains the behavioral reference until equivalent service endpoints
+  are validated.
+
+Initial plugin callback API surface:
+
+- API package: `internal/httpapi` owns HTTP routing, request decoding,
+  response encoding, and narrow callback authentication. It must not own iRODS
+  mutation policy, mapping resolution, retry, audit, or repair behavior.
+- OpenAPI contract: `api/openapi.yaml` is the public planning contract for the
+  private control-plane API. Keep the OpenAPI callback schema and Go request
+  structs aligned as this surface evolves.
+- Initial callback route:
+  `POST /admin/v1/keycloak/events`.
+- Initial callback authentication:
+  `X-IRODS-KC-Shared-Secret`, configured in the Go service by
+  `IRODS_KC_KEYCLOAK_EVENT_SHARED_SECRET` and configured in the Keycloak
+  event-listener plugin by its own deployment secret.
+- Initial iRODS credential model:
+  the Keycloak-side service sends an `irods_admin.credential` envelope with an
+  `encoding`, opaque `value`, and optional `key_id`. This is intentionally an
+  encoded credential transport model, not Java iRODS client behavior.
+- Security caveat:
+  plain base64 is encoding, not encryption. The shared-secret model is only the
+  first private-service trust boundary. Production hardening should consider
+  encrypted credential envelopes, mTLS, signed request bodies, token-based
+  service identity, key rotation, and replay windows.
+- Service behavior:
+  the callback endpoint may synchronously validate and accept the request, but
+  iRODS mutation should be owned by service-layer code and should remain
+  idempotent. The Keycloak listener should use tight HTTP timeouts and treat
+  failure as an auditable repair condition unless a future explicit blocking
+  mode is designed.
 
 Exit criteria:
 
